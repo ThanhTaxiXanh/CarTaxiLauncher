@@ -23,4 +23,5 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.car.app:app:1.4.0")
 }
