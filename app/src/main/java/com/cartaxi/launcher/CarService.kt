@@ -10,6 +10,7 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Surface
 import androidx.car.app.AppManager
 import androidx.car.app.CarAppService
@@ -44,13 +45,16 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
     private var height = 0
     private var speedKmh: Int? = null
     private var selected = -1
+    private var lastDraw = 0L
     private val handler = Handler(Looper.getMainLooper())
     private val prefs = appCtx.getSharedPreferences("cfg", Context.MODE_PRIVATE)
     private val qrFile = File(appCtx.filesDir, "qr.png")
+    private val maps = MapsHost(appCtx, handler)
 
     private val ticker = object : Runnable {
         override fun run() {
             draw()
+            ensureMaps()
             handler.postDelayed(this, 1000)
         }
     }
@@ -62,6 +66,9 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
     }
 
     init {
+        maps.onFrame = {
+            if (SystemClock.uptimeMillis() - lastDraw >= 40) draw()
+        }
         ctx.getCarService(AppManager::class.java).setSurfaceCallback(object : SurfaceCallback {
             override fun onSurfaceAvailable(container: SurfaceContainer) {
                 surface = container.surface
@@ -74,15 +81,29 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
                 val i = LauncherRenderer.hitIcon(x, y)
                 if (i >= 0) {
                     selected = i
+                    when (i) {
+                        0 -> maps.relaunch()
+                        1 -> maps.back()
+                    }
                     draw()
+                    return
                 }
+                val p = LauncherRenderer.hitMap(x, y)
+                if (p != null) maps.tap(p[0], p[1])
             }
 
             override fun onSurfaceDestroyed(container: SurfaceContainer) {
                 stopUpdates()
+                maps.stop()
                 surface = null
             }
         })
+    }
+
+    private fun ensureMaps() {
+        if (maps.running()) return
+        val r = LauncherRenderer.mapsRect() ?: return
+        maps.start(r.width().toInt(), r.height().toInt())
     }
 
     @SuppressLint("MissingPermission")
@@ -109,6 +130,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
     private fun draw() {
         val s = surface ?: return
         if (!s.isValid) return
+        lastDraw = SystemClock.uptimeMillis()
         val canvas = try {
             s.lockCanvas(null)
         } catch (e: Exception) {
@@ -120,7 +142,11 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
                 qrFile = qrFile,
                 nowMs = System.currentTimeMillis(),
                 layoutMode = prefs.getInt("layout", 1),
-                selectedIcon = selected
+                selectedIcon = selected,
+                mapFrame = maps.frame,
+                mapFrameW = maps.frameW,
+                mapFrameH = maps.frameH,
+                mapsStatus = maps.status
             )
             LauncherRenderer.render(canvas, width, height, st)
         } finally {
