@@ -25,5 +25,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.car.app:app:1.4.0")
     implementation("com.google.zxing:core:3.5.3")
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 
 }
