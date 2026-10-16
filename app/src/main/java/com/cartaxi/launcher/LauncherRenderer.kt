@@ -1,20 +1,26 @@
 package com.cartaxi.launcher
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.EncodeHintType
-import com.google.zxing.qrcode.QRCodeWriter
+import java.io.File
 import java.util.Calendar
 
-data class UiState(val speedKmh: Int?, val qrText: String, val nowMs: Long)
+data class UiState(
+    val speedKmh: Int?,
+    val qrFile: File?,
+    val nowMs: Long,
+    val layoutMode: Int, // 0 tự động, 1 ngang, 2 dọc
+    val selectedIcon: Int
+)
 
 object LauncherRenderer {
+    private const val ICON_COUNT = 5
+
     private val BG = Color.rgb(12, 16, 24)
     private val CARD = Color.rgb(28, 36, 50)
     private val STROKE = Color.rgb(60, 72, 92)
@@ -28,7 +34,6 @@ object LauncherRenderer {
         color = STROKE
     }
     private val tp = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val bmpPaint = Paint().apply { isFilterBitmap = false }
 
     private val DAYS = arrayOf("Chủ nhật", "Thứ hai", "Thứ ba", "Thứ tư", "Thứ năm", "Thứ sáu", "Thứ bảy")
 
@@ -37,39 +42,52 @@ object LauncherRenderer {
         val qr: RectF, val media: RectF, val icons: RectF
     )
 
-    private var qrKey: String? = null
-    private var qrBmp: Bitmap? = null
+    private var lastIcons: RectF? = null
+
+    private var qrStamp = 0L
+    private var qrSrc: Bitmap? = null
+    private var qrScaled: Bitmap? = null
+    private var qrScaledW = 0
+    private var qrScaledH = 0
 
     private var lunarKey = -1
     private var lunarText = ""
 
-    fun render(c: Canvas, cw: Int, ch: Int, stable: Rect?, st: UiState) {
+    fun render(c: Canvas, cw: Int, ch: Int, st: UiState) {
         c.drawColor(BG)
-        val base = if (stable != null && stable.width() > 100 && stable.height() > 100) stable else Rect(0, 0, cw, ch)
-        val pad = minOf(base.width(), base.height()) * 0.02f
-        val area = RectF(base.left + pad, base.top + pad, base.right - pad, base.bottom - pad)
-        val g = pad
-        val lay = if (area.width() < area.height() * 1.25f) portrait(area, g) else landscape(area, g)
+        val pad = minOf(cw, ch) * 0.012f
+        val g = minOf(cw, ch) * 0.016f
+        val area = RectF(pad, pad, cw - pad, ch - pad)
+        val land = when (st.layoutMode) {
+            1 -> true
+            2 -> false
+            else -> area.width() >= area.height() * 1.25f
+        }
+        val lay = if (land) landscape(area, g) else portrait(area, g)
+        lastIcons = lay.icons
 
         drawTime(c, lay.time, st)
         drawLunar(c, lay.lunar, st.nowMs)
         drawPlaceholder(c, lay.maps, "Maps")
-        drawQr(c, lay.qr, st.qrText)
+        drawQr(c, lay.qr, st.qrFile)
         drawPlaceholder(c, lay.media, "Media")
-        drawIcons(c, lay.icons)
+        drawIcons(c, lay.icons, st.selectedIcon)
+    }
 
-        tp.color = ACCENT
-        tp.typeface = Typeface.DEFAULT
-        tp.textAlign = Paint.Align.LEFT
-        tp.textSize = 24f
-        c.drawText("${cw}x${ch}  vung ${base.width()}x${base.height()}", area.left + 10f, area.bottom - 10f, tp)
+    fun hitIcon(x: Float, y: Float): Int {
+        val r = lastIcons ?: return -1
+        if (!r.contains(x, y)) return -1
+        val horizontal = r.width() >= r.height()
+        val slot = if (horizontal) r.width() / ICON_COUNT else r.height() / ICON_COUNT
+        val i = ((if (horizontal) x - r.left else y - r.top) / slot).toInt()
+        return i.coerceIn(0, ICON_COUNT - 1)
     }
 
     private fun portrait(a: RectF, g: Float): Layout {
-        val colSplit = a.left + a.width() * 0.58f
+        val colSplit = a.left + a.width() * 0.56f
         val rowTop = a.top + a.height() * 0.19f
         val iconTop = a.top + a.height() * 0.90f
-        val qrBottom = rowTop + (a.bottom - rowTop) * 0.62f
+        val qrBottom = rowTop + (a.bottom - rowTop) * 0.70f
         return Layout(
             time = RectF(colSplit + g / 2, a.top, a.right, rowTop - g / 2),
             lunar = RectF(a.left, a.top, colSplit - g / 2, rowTop - g / 2),
@@ -81,13 +99,13 @@ object LauncherRenderer {
     }
 
     private fun landscape(a: RectF, g: Float): Layout {
-        val iconW = a.width() * 0.07f
-        val rightLeft = a.right - a.width() * 0.30f
+        val iconW = a.width() * 0.09f
+        val rightLeft = a.right - a.width() * 0.36f
         val midLeft = a.left + iconW + g / 2
         val midRight = rightLeft - g / 2
         val midMid = (midLeft + midRight) / 2
-        val rowTop = a.top + a.height() * 0.22f
-        val qrBottom = a.top + a.height() * 0.75f
+        val rowTop = a.top + a.height() * 0.20f
+        val qrBottom = a.top + a.height() * 0.80f
         return Layout(
             time = RectF(midLeft, a.top, midMid - g / 2, rowTop - g / 2),
             lunar = RectF(midMid + g / 2, a.top, midRight, rowTop - g / 2),
@@ -153,48 +171,56 @@ object LauncherRenderer {
         drawFit(c, lunarText, r.centerX(), r.top + h * 0.72f, r.width() * 0.92f, h * 0.28f, ACCENT)
     }
 
-    private fun qrBitmap(text: String): Bitmap? {
-        if (text == qrKey) return qrBmp
-        qrKey = text
-        qrBmp = try {
-            val hints = mapOf<EncodeHintType, Any>(EncodeHintType.MARGIN to 1)
-            val m = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, 300, 300, hints)
-            val px = IntArray(m.width * m.height)
-            for (y in 0 until m.height) {
-                for (x in 0 until m.width) {
-                    px[y * m.width + x] = if (m.get(x, y)) Color.BLACK else Color.WHITE
-                }
-            }
-            Bitmap.createBitmap(px, m.width, m.height, Bitmap.Config.ARGB_8888)
-        } catch (e: Exception) {
-            null
+    private fun loadQr(f: File?): Bitmap? {
+        if (f == null || !f.exists()) {
+            qrSrc = null
+            qrScaled = null
+            qrStamp = 0L
+            return null
         }
-        return qrBmp
+        val stamp = f.lastModified() xor f.length()
+        if (stamp != qrStamp) {
+            qrSrc = BitmapFactory.decodeFile(f.path)
+            qrStamp = stamp
+            qrScaled = null
+        }
+        return qrSrc
     }
 
-    private fun drawQr(c: Canvas, r: RectF, text: String) {
+    private fun drawQr(c: Canvas, r: RectF, file: File?) {
         card(c, r)
-        val bmp = if (text.isBlank()) null else qrBitmap(text)
+        val bmp = loadQr(file)
         if (bmp == null) {
-            drawFit(c, "Mã QR", r.centerX(), r.centerY(), r.width() * 0.8f, r.height() * 0.15f, MUTED, true)
-            drawFit(c, "(nhập trong app điện thoại)", r.centerX(), r.centerY() + r.height() * 0.12f, r.width() * 0.85f, r.height() * 0.06f, MUTED)
+            drawFit(c, "Mã QR", r.centerX(), r.centerY(), r.width() * 0.8f, r.height() * 0.12f, MUTED, true)
+            drawFit(
+                c, "(chọn ảnh trong app điện thoại)", r.centerX(), r.centerY() + r.height() * 0.10f,
+                r.width() * 0.85f, r.height() * 0.05f, MUTED
+            )
             return
         }
-        val side = minOf(r.width(), r.height()) * 0.92f
-        val dst = RectF(r.centerX() - side / 2, r.centerY() - side / 2, r.centerX() + side / 2, r.centerY() + side / 2)
-        c.drawBitmap(bmp, null, dst, bmpPaint)
+        val inset = minOf(r.width(), r.height()) * 0.03f
+        val iw = r.width() - 2 * inset
+        val ih = r.height() - 2 * inset
+        val scale = minOf(iw / bmp.width, ih / bmp.height)
+        val dw = maxOf(1, (bmp.width * scale).toInt())
+        val dh = maxOf(1, (bmp.height * scale).toInt())
+        if (qrScaled == null || qrScaledW != dw || qrScaledH != dh) {
+            qrScaled = Bitmap.createScaledBitmap(bmp, dw, dh, true)
+            qrScaledW = dw
+            qrScaledH = dh
+        }
+        c.drawBitmap(qrScaled!!, r.centerX() - dw / 2f, r.centerY() - dh / 2f, null)
     }
 
-    private fun drawIcons(c: Canvas, r: RectF) {
+    private fun drawIcons(c: Canvas, r: RectF, selected: Int) {
         card(c, r)
-        val n = 5
         val horizontal = r.width() >= r.height()
-        val slot = if (horizontal) r.width() / n else r.height() / n
-        val rad = minOf(slot, if (horizontal) r.height() else r.width()) * 0.32f
-        fill.color = ACCENT
-        for (i in 0 until n) {
+        val slot = if (horizontal) r.width() / ICON_COUNT else r.height() / ICON_COUNT
+        val rad = minOf(slot, if (horizontal) r.height() else r.width()) * 0.36f
+        for (i in 0 until ICON_COUNT) {
             val cx = if (horizontal) r.left + slot * (i + 0.5f) else r.centerX()
             val cy = if (horizontal) r.centerY() else r.top + slot * (i + 0.5f)
+            fill.color = if (i == selected) Color.WHITE else ACCENT
             c.drawCircle(cx, cy, rad, fill)
         }
     }
