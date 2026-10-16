@@ -2,18 +2,28 @@ package com.cartaxi.launcher
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Bundle
 import android.widget.Button
-import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import java.io.File
 
 class MainActivity : Activity() {
+    private val reqPick = 2
+    private val names = arrayOf("Tự động", "Ngang", "Dọc")
+    private lateinit var preview: ImageView
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences("cfg", MODE_PRIVATE)
-        val pad = (24 * resources.displayMetrics.density).toInt()
+        val density = resources.displayMetrics.density
+        val pad = (24 * density).toInt()
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -23,15 +33,27 @@ class MainActivity : Activity() {
             text = "CarTaxiLauncher"
             textSize = 22f
         }
-        val qr = EditText(this).apply {
-            hint = "Nội dung mã QR (link, số tài khoản...)"
-            setText(prefs.getString("qr", ""))
+        preview = ImageView(this).apply {
+            adjustViewBounds = true
+            maxHeight = (320 * density).toInt()
+            scaleType = ImageView.ScaleType.FIT_CENTER
         }
-        val save = Button(this).apply {
-            text = "Lưu mã QR"
+        val pick = Button(this).apply {
+            text = "Chọn ảnh mã QR từ điện thoại"
             setOnClickListener {
-                prefs.edit().putString("qr", qr.text.toString()).apply()
-                Toast.makeText(this@MainActivity, "Đã lưu", Toast.LENGTH_SHORT).show()
+                val i = Intent(Intent.ACTION_GET_CONTENT).apply {
+                    type = "image/*"
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                }
+                this@MainActivity.startActivityForResult(i, reqPick)
+            }
+        }
+        val layoutBtn = Button(this).apply {
+            text = "Bố cục: ${names[prefs.getInt("layout", 1)]}"
+            setOnClickListener {
+                val next = (prefs.getInt("layout", 1) + 1) % 3
+                prefs.edit().putInt("layout", next).apply()
+                text = "Bố cục: ${names[next]}"
             }
         }
         val perm = Button(this).apply {
@@ -41,9 +63,45 @@ class MainActivity : Activity() {
             }
         }
         root.addView(title)
-        root.addView(qr)
-        root.addView(save)
+        root.addView(preview)
+        root.addView(pick)
+        root.addView(layoutBtn)
         root.addView(perm)
         setContentView(root)
+        refreshPreview()
+    }
+
+    private fun refreshPreview() {
+        val f = File(filesDir, "qr.png")
+        if (f.exists()) preview.setImageBitmap(BitmapFactory.decodeFile(f.path))
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == reqPick && resultCode == RESULT_OK) {
+            val uri = data?.data ?: return
+            saveQr(uri)
+        }
+    }
+
+    private fun saveQr(uri: Uri) {
+        try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+            var sample = 1
+            while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 1600) sample *= 2
+            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+            val bmp = contentResolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it, null, opts)
+            } ?: throw IllegalStateException("decode")
+            File(filesDir, "qr.png").outputStream().use {
+                bmp.compress(Bitmap.CompressFormat.PNG, 100, it)
+            }
+            refreshPreview()
+            Toast.makeText(this, "Đã lưu mã QR", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Không đọc được ảnh", Toast.LENGTH_SHORT).show()
+        }
     }
 }
