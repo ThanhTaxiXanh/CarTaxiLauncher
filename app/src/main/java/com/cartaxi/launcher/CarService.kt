@@ -5,7 +5,6 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Rect
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -24,6 +23,7 @@ import androidx.car.app.model.ActionStrip
 import androidx.car.app.model.Template
 import androidx.car.app.navigation.model.NavigationTemplate
 import androidx.car.app.validation.HostValidator
+import java.io.File
 import kotlin.math.roundToInt
 
 class CarService : CarAppService() {
@@ -42,10 +42,11 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
     private var surface: Surface? = null
     private var width = 0
     private var height = 0
-    private var stable: Rect? = null
     private var speedKmh: Int? = null
+    private var selected = -1
     private val handler = Handler(Looper.getMainLooper())
     private val prefs = appCtx.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+    private val qrFile = File(appCtx.filesDir, "qr.png")
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -69,9 +70,12 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
                 startUpdates()
             }
 
-            override fun onStableAreaChanged(stableArea: Rect) {
-                stable = stableArea
-                draw()
+            override fun onClick(x: Float, y: Float) {
+                val i = LauncherRenderer.hitIcon(x, y)
+                if (i >= 0) {
+                    selected = i
+                    draw()
+                }
             }
 
             override fun onSurfaceDestroyed(container: SurfaceContainer) {
@@ -111,8 +115,14 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
             return
         }
         try {
-            val st = UiState(speedKmh, prefs.getString("qr", "") ?: "", System.currentTimeMillis())
-            LauncherRenderer.render(canvas, width, height, stable, st)
+            val st = UiState(
+                speedKmh = speedKmh,
+                qrFile = qrFile,
+                nowMs = System.currentTimeMillis(),
+                layoutMode = prefs.getInt("layout", 1),
+                selectedIcon = selected
+            )
+            LauncherRenderer.render(canvas, width, height, st)
         } finally {
             s.unlockCanvasAndPost(canvas)
         }
