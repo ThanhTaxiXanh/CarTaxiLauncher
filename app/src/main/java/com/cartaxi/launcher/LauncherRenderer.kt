@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import java.io.File
@@ -15,7 +16,11 @@ data class UiState(
     val qrFile: File?,
     val nowMs: Long,
     val layoutMode: Int, // 0 tự động, 1 ngang, 2 dọc
-    val selectedIcon: Int
+    val selectedIcon: Int,
+    val mapFrame: Bitmap?,
+    val mapFrameW: Int,
+    val mapFrameH: Int,
+    val mapsStatus: String
 )
 
 object LauncherRenderer {
@@ -34,6 +39,8 @@ object LauncherRenderer {
         color = STROKE
     }
     private val tp = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val framePaint = Paint().apply { isFilterBitmap = true }
+    private val srcRect = Rect()
 
     private val DAYS = arrayOf("Chủ nhật", "Thứ hai", "Thứ ba", "Thứ tư", "Thứ năm", "Thứ sáu", "Thứ bảy")
 
@@ -43,6 +50,8 @@ object LauncherRenderer {
     )
 
     private var lastIcons: RectF? = null
+    private var lastMaps: RectF? = null
+    private var lastMapsDst: RectF? = null
 
     private var qrStamp = 0L
     private var qrSrc: Bitmap? = null
@@ -52,6 +61,8 @@ object LauncherRenderer {
 
     private var lunarKey = -1
     private var lunarText = ""
+
+    fun mapsRect(): RectF? = lastMaps
 
     fun render(c: Canvas, cw: Int, ch: Int, st: UiState) {
         c.drawColor(BG)
@@ -65,10 +76,11 @@ object LauncherRenderer {
         }
         val lay = if (land) landscape(area, g) else portrait(area, g)
         lastIcons = lay.icons
+        lastMaps = lay.maps
 
         drawTime(c, lay.time, st)
         drawLunar(c, lay.lunar, st.nowMs)
-        drawPlaceholder(c, lay.maps, "Maps")
+        drawMaps(c, lay.maps, st)
         drawQr(c, lay.qr, st.qrFile)
         drawPlaceholder(c, lay.media, "Media")
         drawIcons(c, lay.icons, st.selectedIcon)
@@ -81,6 +93,12 @@ object LauncherRenderer {
         val slot = if (horizontal) r.width() / ICON_COUNT else r.height() / ICON_COUNT
         val i = ((if (horizontal) x - r.left else y - r.top) / slot).toInt()
         return i.coerceIn(0, ICON_COUNT - 1)
+    }
+
+    fun hitMap(x: Float, y: Float): FloatArray? {
+        val d = lastMapsDst ?: return null
+        if (!d.contains(x, y)) return null
+        return floatArrayOf((x - d.left) / d.width(), (y - d.top) / d.height())
     }
 
     private fun portrait(a: RectF, g: Float): Layout {
@@ -140,6 +158,26 @@ object LauncherRenderer {
     private fun drawPlaceholder(c: Canvas, r: RectF, label: String) {
         card(c, r)
         drawFit(c, label, r.centerX(), r.centerY(), r.width() * 0.8f, r.height() * 0.25f, MUTED, true)
+    }
+
+    private fun drawMaps(c: Canvas, r: RectF, st: UiState) {
+        card(c, r)
+        val f = st.mapFrame
+        if (f == null || st.mapFrameW <= 0 || st.mapFrameH <= 0) {
+            lastMapsDst = null
+            drawFit(c, "Maps", r.centerX(), r.centerY() - r.height() * 0.04f, r.width() * 0.8f, r.height() * 0.22f, MUTED, true)
+            drawFit(c, st.mapsStatus, r.centerX(), r.centerY() + r.height() * 0.16f, r.width() * 0.92f, r.height() * 0.045f, ACCENT)
+            return
+        }
+        val fw = st.mapFrameW
+        val fh = st.mapFrameH
+        val scale = minOf(r.width() / fw, r.height() / fh)
+        val dw = fw * scale
+        val dh = fh * scale
+        val dst = RectF(r.centerX() - dw / 2, r.centerY() - dh / 2, r.centerX() + dw / 2, r.centerY() + dh / 2)
+        srcRect.set(0, 0, minOf(fw, f.width), minOf(fh, f.height))
+        c.drawBitmap(f, srcRect, dst, framePaint)
+        lastMapsDst = dst
     }
 
     private fun drawTime(c: Canvas, r: RectF, st: UiState) {
