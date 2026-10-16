@@ -49,7 +49,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
     private val handler = Handler(Looper.getMainLooper())
     private val prefs = appCtx.getSharedPreferences("cfg", Context.MODE_PRIVATE)
     private val qrFile = File(appCtx.filesDir, "qr.png")
-    private val maps = MapsHost(appCtx, handler)
+    private val maps = NativeMap(appCtx, handler)
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -62,6 +62,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
     private val locListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
             speedKmh = if (location.hasSpeed()) (location.speed * 3.6f).roundToInt() else null
+            maps.onLocation(location)
         }
     }
 
@@ -81,10 +82,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
                 val i = LauncherRenderer.hitIcon(x, y)
                 if (i >= 0) {
                     selected = i
-                    when (i) {
-                        0 -> maps.relaunch()
-                        1 -> maps.back()
-                    }
+                    maps.action(i)
                     draw()
                     return
                 }
@@ -113,6 +111,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
         if (appCtx.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
         try {
             val lm = appCtx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let { maps.onLocation(it) }
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locListener, Looper.getMainLooper())
         } catch (e: Exception) {
         }
