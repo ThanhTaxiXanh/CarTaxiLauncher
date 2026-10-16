@@ -3,6 +3,7 @@ package com.cartaxi.launcher
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -12,12 +13,18 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import rikka.shizuku.Shizuku
 import java.io.File
 
 class MainActivity : Activity() {
     private val reqPick = 2
     private val names = arrayOf("Tự động", "Ngang", "Dọc")
     private lateinit var preview: ImageView
+    private lateinit var status: TextView
+
+    private val permListener = Shizuku.OnRequestPermissionResultListener { _, _ ->
+        runOnUiThread { updateStatus() }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -33,9 +40,10 @@ class MainActivity : Activity() {
             text = "CarTaxiLauncher"
             textSize = 22f
         }
+        status = TextView(this).apply { textSize = 16f }
         preview = ImageView(this).apply {
             adjustViewBounds = true
-            maxHeight = (320 * density).toInt()
+            maxHeight = (260 * density).toInt()
             scaleType = ImageView.ScaleType.FIT_CENTER
         }
         val pick = Button(this).apply {
@@ -62,13 +70,65 @@ class MainActivity : Activity() {
                 this@MainActivity.requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 1)
             }
         }
+        val shz = Button(this).apply {
+            text = "Kết nối Shizuku"
+            setOnClickListener { this@MainActivity.connectShizuku() }
+        }
         root.addView(title)
+        root.addView(status)
+        root.addView(shz)
         root.addView(preview)
         root.addView(pick)
         root.addView(layoutBtn)
         root.addView(perm)
         setContentView(root)
+
+        try {
+            Shizuku.addRequestPermissionResultListener(permListener)
+        } catch (t: Throwable) {
+        }
         refreshPreview()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updateStatus()
+    }
+
+    override fun onDestroy() {
+        try {
+            Shizuku.removeRequestPermissionResultListener(permListener)
+        } catch (t: Throwable) {
+        }
+        super.onDestroy()
+    }
+
+    private fun updateStatus() {
+        val s = try {
+            if (!Shizuku.pingBinder()) {
+                "Shizuku: chưa chạy"
+            } else if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                "Shizuku: đã kết nối"
+            } else {
+                "Shizuku: đang chạy, chưa cấp quyền"
+            }
+        } catch (t: Throwable) {
+            "Shizuku: không khả dụng"
+        }
+        status.text = s
+    }
+
+    private fun connectShizuku() {
+        try {
+            if (!Shizuku.pingBinder()) {
+                Toast.makeText(this, "Hãy mở app Shizuku và bấm Start trước", Toast.LENGTH_LONG).show()
+            } else if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                Shizuku.requestPermission(100)
+            }
+        } catch (t: Throwable) {
+            Toast.makeText(this, "Lỗi Shizuku: " + t.message, Toast.LENGTH_LONG).show()
+        }
+        updateStatus()
     }
 
     private fun refreshPreview() {
