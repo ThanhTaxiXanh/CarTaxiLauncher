@@ -46,19 +46,31 @@ import org.maplibre.geojson.MultiLineString
 import org.maplibre.geojson.Point
 import org.maplibre.geojson.Polygon
 import java.util.Calendar
+import kotlin.math.abs
 import kotlin.math.asin
+import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.exp
+import kotlin.math.ln
+import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
+import android.graphics.Point as APoint
 
 class NativeMap(private val appCtx: Context, private val main: Handler) {
     companion object {
         const val STYLE = "https://tiles.openfreemap.org/styles/liberty"
         const val DPI = 260
         private val ARROW = arrayOf(
-            doubleArrayOf(0.0, 9.0), doubleArrayOf(5.5, -7.0),
-            doubleArrayOf(0.0, -3.5), doubleArrayOf(-5.5, -7.0)
+            doubleArrayOf(0.0, 12.0), doubleArrayOf(8.0, -9.0),
+            doubleArrayOf(0.0, -4.5), doubleArrayOf(-8.0, -9.0)
         )
+        private val ROAD_KEYS = arrayOf(
+            "road", "highway", "street", "motorway", "trunk", "primary", "secondary",
+            "tertiary", "minor", "service", "bridge", "tunnel", "link", "path", "pedestrian", "track"
+        )
+        private val SKIP_CLASS = setOf("rail", "transit", "ferry", "aerialway", "path", "pedestrian", "track", "pier")
     }
 
     var status = "Đang chờ"
@@ -68,21 +80,62 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     var streetName = ""
     var onFrame: (() -> Unit)? = null
 
+    private class SnapPoint(val lat: Double, val lon: Double, val heading: Double)
+
     private var vd: VirtualDisplay? = null
     private var reader: ImageReader? = null
     private var pres: MapPresentation? = null
     private var map: MapLibreMap? = null
     private var blocked = false
 
+    // camera / người dùng
     private var tilt = 60.0
-    private var zoom = 17.0
-    private var heading = 0f
-    private var lastLoc: Location? = null
+    private var following = true
+    private var lastTouchMs = 0L
+    private var userZoom: Double? = null
+    private var userZoomMs = 0L
+    private var manualZoom = 17.0
+    private var tiltBtn: TextView? = null
+
+    // vị trí
+    private var hasFix = false
+    private var snapped = false
+    private var moving = false
+    private var speedMs = 0f
+    private var smKmh = 0.0
+    private var fixMs = 0L
+    private var lastRawLat = 0.0
+    private var lastRawLon = 0.0
+    private var tLat = 21.0285
+    private var tLon = 105.8542
+    private var tHeading = 0.0
+    private var dLat = 21.0285
+    private var dLon = 105.8542
+    private var dHeading = 0.0
+    private var dZoom = 18.0
+    private var lastFrameMs = 0L
+
+    // đường để hút vào làn
+    private val segs = ArrayList<DoubleArray>()
+    private var segCenterLat = 0.0
+    private var segCenterLon = 0.0
+    private var segMs = 0L
+
+    // ngày / đêm, tên đường
     private var night = false
     private var dnInit = false
     private var lastStreetMs = 0L
     private var lastStreetSeen = 0L
-    private var tiltBtn: TextView? = null
+
+    private val loop = object : Runnable {
+        override fun run() {
+            try {
+                step()
+            } catch (t: Throwable) {
+            }
+            main.postDelayed(this, 33L)
+        }
+    }
 
     fun running(): Boolean = vd != null
 
@@ -111,6 +164,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             vd = d
             frameW = vw
             frameH = vh
+            following = true
             status = "Đang tải bản đồ..."
             val p = MapPresentation(appCtx, d.display)
             pres = p
@@ -125,6 +179,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     }
 
     fun stop() {
+        main.removeCallbacks(loop)
         try {
             pres?.mapView?.let {
                 it.onPause()
@@ -197,25 +252,278 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         }, 60)
     }
 
-    // ---------- vị trí, ngày/đêm, tên đường ----------
-
-    fun onLocation(loc: Location) {
-        lastLoc = loc
-        if (loc.hasBearing() && loc.speed > 1.0f) heading = loc.bearing
-        updateCar()
-        applyCamera()
+    private fun leaveFollow() {
+        if (following) {
+            following = false
+            manualZoom = dZoom
+        }
+        lastTouchMs = SystemClock.elapsedRealtime()
     }
 
+    fun scrollBy(dx: Float, dy: Float) {
+        val m = map ?: return
+        leaveFollow()
+        m.moveCamera(CameraUpdateFactory.scrollBy(dx, dy))
+    }
+
+    fun fling(vx: Float, vy: Float) {
+        val m = map ?: return
+        leaveFollow()
+        m.animateCamera(CameraUpdateFactory.scrollBy(-vx * 0.12f, -vy * 0.12f), 400)
+    }
+
+    fun pinch(scale: Float, nx: Float, ny: Float) {
+        val m = map ?: return
+        leaveFollow()
+        val dz = ln(scale.toDouble()) / ln(2.0)
+        m.moveCamera(CameraUpdateFactory.zoomBy(dz, APoint((nx * frameW).toInt(), (ny * frameH).toInt())))
+        manualZoom = m.cameraPosition.zoom
+    }
+
+    private fun recenter() {
+        following = true
+        userZoom = null
+    }
+
+    private fun toggleTilt() {
+        tilt = if (tilt > 0.0) 0.0 else 60.0
+        tiltBtn?.text = if (tilt > 0.0) "3D" else "2D"
+    }
+
+    private fun zoomButton(delta: Double) {
+        val now = SystemClock.elapsedRealtime()
+        if (following) {
+            val base = userZoom ?: dZoom
+            userZoom = (base + delta).coerceIn(3.0, 20.0)
+            userZoomMs = now
+        } else {
+            val m = map ?: return
+            m.animateCamera(CameraUpdateFactory.zoomBy(delta), 250)
+            manualZoom = (manualZoom + delta).coerceIn(3.0, 20.0)
+            lastTouchMs = now
+        }
+    }
+
+    // ---------- GPS ----------
+
+    private fun dist(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val dx = (lon2 - lon1) * 111320.0 * cos(Math.toRadians((lat1 + lat2) / 2))
+        val dy = (lat2 - lat1) * 111320.0
+        return sqrt(dx * dx + dy * dy)
+    }
+
+    fun onLocation(loc: Location) {
+        val now = SystemClock.elapsedRealtime()
+        val sp = if (loc.hasSpeed()) loc.speed else 0f
+        if (hasFix) {
+            if (loc.hasAccuracy() && loc.accuracy > 60f) return
+            val d = dist(lastRawLat, lastRawLon, loc.latitude, loc.longitude)
+            val dt = (now - fixMs) / 1000.0
+            if (dt > 0.0 && dt < 4.0 && d / dt > 70.0) return
+        }
+        lastRawLat = loc.latitude
+        lastRawLon = loc.longitude
+        moving = if (moving) sp > 0.9f else sp > 2.0f
+        speedMs = if (moving) sp else 0f
+        val hd = if (loc.hasBearing() && moving) loc.bearing.toDouble() else Double.NaN
+        if (!hasFix) {
+            hasFix = true
+            val s = snap(loc.latitude, loc.longitude, hd)
+            snapped = s != null
+            setTarget(s ?: SnapPoint(loc.latitude, loc.longitude, if (hd.isNaN()) 0.0 else hd))
+            dLat = tLat
+            dLon = tLon
+            dHeading = tHeading
+            fixMs = now
+            return
+        }
+        fixMs = now
+        if (moving) {
+            val s = snap(loc.latitude, loc.longitude, if (hd.isNaN()) tHeading else hd)
+            if (s != null) snapped = true
+            setTarget(s ?: SnapPoint(loc.latitude, loc.longitude, if (hd.isNaN()) tHeading else hd))
+        }
+    }
+
+    private fun setTarget(s: SnapPoint) {
+        tLat = s.lat
+        tLon = s.lon
+        tHeading = s.heading
+    }
+
+    // ---------- hút vào làn đường ----------
+
+    private fun ensureRoads(lat: Double, lon: Double) {
+        val now = SystemClock.elapsedRealtime()
+        if (segs.isNotEmpty() && now - segMs < 4000L && dist(lat, lon, segCenterLat, segCenterLon) < 80.0) return
+        val st = map?.style ?: return
+        try {
+            val src = st.sources.firstOrNull { it is VectorSource } as? VectorSource ?: return
+            val feats = src.querySourceFeatures(arrayOf("transportation"), null)
+            segs.clear()
+            for (f in feats) {
+                val cls = try {
+                    f.getStringProperty("class")
+                } catch (e: Exception) {
+                    null
+                } ?: continue
+                if (cls in SKIP_CLASS) continue
+                val ow = try {
+                    f.getNumberProperty("oneway")?.toInt() ?: 0
+                } catch (e: Exception) {
+                    0
+                }
+                val g = f.geometry()
+                val lines: List<List<Point>> = when (g) {
+                    is LineString -> listOf(g.coordinates())
+                    is MultiLineString -> g.coordinates()
+                    else -> continue
+                }
+                for (pts in lines) {
+                    for (i in 0 until pts.size - 1) {
+                        val a = pts[i]
+                        val b = pts[i + 1]
+                        if (dist(lat, lon, a.latitude(), a.longitude()) > 400.0) continue
+                        segs.add(doubleArrayOf(a.latitude(), a.longitude(), b.latitude(), b.longitude(), ow.toDouble()))
+                    }
+                }
+            }
+            segCenterLat = lat
+            segCenterLon = lon
+            segMs = now
+        } catch (t: Throwable) {
+        }
+    }
+
+    private fun snap(lat: Double, lon: Double, hd: Double): SnapPoint? {
+        ensureRoads(lat, lon)
+        if (segs.isEmpty()) return null
+        val kx = 111320.0 * cos(Math.toRadians(lat))
+        val ky = 111320.0
+        var bestScore = 1e9
+        var bx = 0.0
+        var by = 0.0
+        var bBearing = 0.0
+        var bOneway = 0.0
+        var found = false
+        for (s in segs) {
+            val ax = (s[1] - lon) * kx
+            val ay = (s[0] - lat) * ky
+            val cx = (s[3] - lon) * kx
+            val cy = (s[2] - lat) * ky
+            val dx = cx - ax
+            val dy = cy - ay
+            val len2 = dx * dx + dy * dy
+            if (len2 < 0.01) continue
+            val t = (-(ax * dx + ay * dy) / len2).coerceIn(0.0, 1.0)
+            val px = ax + t * dx
+            val py = ay + t * dy
+            val d = sqrt(px * px + py * py)
+            if (d > 25.0) continue
+            val segB = Math.toDegrees(atan2(dx, dy))
+            var score = d
+            if (!hd.isNaN()) {
+                val diff = abs(((segB - hd + 540.0) % 360.0) - 180.0)
+                val a = min(diff, 180.0 - diff)
+                score += 0.3 * a
+                if (a > 75.0) score += 30.0
+            }
+            if (score < bestScore) {
+                bestScore = score
+                bx = px
+                by = py
+                bBearing = segB
+                bOneway = s[4]
+                found = true
+            }
+        }
+        if (!found) return null
+        val ref = if (hd.isNaN()) tHeading else hd
+        var tb = bBearing
+        val dd = abs(((tb - ref + 540.0) % 360.0) - 180.0)
+        if (dd > 90.0) tb += 180.0
+        tb = ((tb % 360.0) + 360.0) % 360.0
+        if (bOneway == 0.0) {
+            val br = Math.toRadians(tb + 90.0)
+            bx += sin(br) * 1.6
+            by += cos(br) * 1.6
+        }
+        return SnapPoint(lat + by / ky, lon + bx / kx, tb)
+    }
+
+    // ---------- vòng lặp 30 khung hình / giây ----------
+
+    private fun autoZoom(kmh: Double): Double = when {
+        kmh <= 8.0 -> 18.0
+        kmh <= 40.0 -> 18.0 - (kmh - 8.0) / 32.0
+        kmh <= 80.0 -> 17.0 - (kmh - 40.0) / 40.0 * 0.8
+        else -> maxOf(15.6, 16.2 - (kmh - 80.0) / 40.0 * 0.6)
+    }
+
+    private fun step() {
+        val m = map ?: return
+        if (m.style == null) return
+        val now = SystemClock.elapsedRealtime()
+        val dt = if (lastFrameMs == 0L) 0.033 else ((now - lastFrameMs) / 1000.0).coerceIn(0.005, 0.2)
+        lastFrameMs = now
+        if (!hasFix) return
+
+        val age = ((now - fixMs) / 1000.0).coerceAtMost(1.3)
+        var pLat = tLat
+        var pLon = tLon
+        if (moving && speedMs > 0f) {
+            val d = speedMs * age
+            val br = Math.toRadians(tHeading)
+            pLat += cos(br) * d / 111320.0
+            pLon += sin(br) * d / (111320.0 * cos(Math.toRadians(tLat)))
+        }
+        val a = 1.0 - exp(-dt / 0.15)
+        dLat += (pLat - dLat) * a
+        dLon += (pLon - dLon) * a
+
+        val diff = ((tHeading - dHeading + 540.0) % 360.0) - 180.0
+        dHeading = (((dHeading + diff * (1.0 - exp(-dt / 0.3))) % 360.0) + 360.0) % 360.0
+
+        smKmh += ((if (moving) speedMs * 3.6 else 0.0) - smKmh) * (1.0 - exp(-dt / 1.5))
+        if (userZoom != null && now - userZoomMs > 15000L) userZoom = null
+        val targetZoom = userZoom ?: autoZoom(smKmh)
+        dZoom += (targetZoom - dZoom) * (1.0 - exp(-dt / 0.7))
+        if (!following && now - lastTouchMs > 12000L) recenter()
+
+        val zs = if (following) dZoom else manualZoom
+        updateCar(2.0.pow(18.0 - zs).coerceIn(0.8, 5.0))
+        if (following) {
+            m.moveCamera(
+                CameraUpdateFactory.newCameraPosition(
+                    CameraPosition.Builder()
+                        .target(LatLng(dLat, dLon))
+                        .zoom(dZoom)
+                        .tilt(tilt)
+                        .bearing(dHeading)
+                        .build()
+                )
+            )
+        }
+    }
+
+    // ---------- ngày / đêm, tên đường ----------
+
     fun update(nowMs: Long) {
-        val loc = lastLoc
-        val lat = loc?.latitude ?: 21.0285
-        val lon = loc?.longitude ?: 105.8542
+        val lat = if (hasFix) tLat else 21.0285
+        val lon = if (hasFix) tLon else 105.8542
         val el = sunElevation(lat, lon, nowMs)
         val wantNight = if (!dnInit) el < -2.0 else if (night) el < 1.0 else el < -3.0
         dnInit = true
         if (wantNight != night) {
             night = wantNight
             if (map != null) loadStyle()
+        }
+        if (hasFix && !snapped) {
+            val s = snap(tLat, tLon, Double.NaN)
+            if (s != null) {
+                setTarget(s)
+                snapped = true
+            }
         }
         if (nowMs - lastStreetMs > 2000L) {
             lastStreetMs = nowMs
@@ -243,20 +551,19 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         val dx = bx - ax
         val dy = by - ay
         val len2 = dx * dx + dy * dy
-        var t = if (len2 == 0.0) 0.0 else -(ax * dx + ay * dy) / len2
-        t = t.coerceIn(0.0, 1.0)
+        val t = if (len2 == 0.0) 0.0 else (-(ax * dx + ay * dy) / len2).coerceIn(0.0, 1.0)
         val cx = ax + t * dx
         val cy = ay + t * dy
         return sqrt(cx * cx + cy * cy)
     }
 
     private fun refreshStreet(nowMs: Long) {
-        val loc = lastLoc ?: return
+        if (!hasFix) return
         val st = map?.style ?: return
         try {
             val src = st.sources.firstOrNull { it is VectorSource } as? VectorSource ?: return
             val feats = src.querySourceFeatures(arrayOf("transportation_name"), null)
-            val kx = 111320.0 * cos(Math.toRadians(loc.latitude))
+            val kx = 111320.0 * cos(Math.toRadians(dLat))
             val ky = 111320.0
             var best: String? = null
             var bestD = 30.0
@@ -274,10 +581,10 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                 }
                 for (pts in lines) {
                     for (i in 0 until pts.size - 1) {
-                        val ax = (pts[i].longitude() - loc.longitude) * kx
-                        val ay = (pts[i].latitude() - loc.latitude) * ky
-                        val bx = (pts[i + 1].longitude() - loc.longitude) * kx
-                        val by = (pts[i + 1].latitude() - loc.latitude) * ky
+                        val ax = (pts[i].longitude() - dLon) * kx
+                        val ay = (pts[i].latitude() - dLat) * ky
+                        val bx = (pts[i + 1].longitude() - dLon) * kx
+                        val by = (pts[i + 1].latitude() - dLat) * ky
                         val d = segDist(ax, ay, bx, by)
                         if (d < bestD) {
                             bestD = d
@@ -296,31 +603,6 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         }
     }
 
-    // ---------- camera ----------
-
-    private fun applyCamera() {
-        val m = map ?: return
-        val b = CameraPosition.Builder()
-            .zoom(zoom)
-            .tilt(tilt)
-            .bearing(heading.toDouble())
-        val loc = lastLoc
-        if (loc != null) b.target(LatLng(loc.latitude, loc.longitude))
-        m.animateCamera(CameraUpdateFactory.newCameraPosition(b.build()), 600)
-    }
-
-    private fun toggleTilt() {
-        tilt = if (tilt > 0.0) 0.0 else 60.0
-        tiltBtn?.text = if (tilt > 0.0) "3D" else "2D"
-        applyCamera()
-    }
-
-    private fun zoomBy(delta: Double) {
-        val m = map ?: return
-        zoom = (m.cameraPosition.zoom + delta).coerceIn(3.0, 20.0)
-        applyCamera()
-    }
-
     // ---------- bản đồ ----------
 
     private fun onMapReady(m: MapLibreMap) {
@@ -329,19 +611,20 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         m.uiSettings.isLogoEnabled = false
         m.uiSettings.isAttributionEnabled = false
         m.uiSettings.setAllGesturesEnabled(false)
-        m.setPadding(0, (frameH * 0.30f).toInt(), 0, 0)
-        val loc = lastLoc
+        m.setPadding(0, (frameH * 0.40f).toInt(), 0, 0)
         m.moveCamera(
             CameraUpdateFactory.newCameraPosition(
                 CameraPosition.Builder()
-                    .target(LatLng(loc?.latitude ?: 21.0285, loc?.longitude ?: 105.8542))
-                    .zoom(zoom)
+                    .target(LatLng(dLat, dLon))
+                    .zoom(dZoom)
                     .tilt(tilt)
-                    .bearing(heading.toDouble())
+                    .bearing(dHeading)
                     .build()
             )
         )
         loadStyle()
+        main.removeCallbacks(loop)
+        main.post(loop)
     }
 
     private fun loadStyle() {
@@ -349,10 +632,22 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         m.setStyle(Style.Builder().fromUri(STYLE)) { style ->
             if (night) themeNight(style)
             addCar(style)
-            updateCar()
             status = "Bản đồ đã tải"
-            applyCamera()
         }
+    }
+
+    private fun roadWidth(k: Float): Expression = Expression.interpolate(
+        Expression.linear(), Expression.zoom(),
+        Expression.stop(12, 1.0f * k),
+        Expression.stop(14, 3.5f * k),
+        Expression.stop(16, 8.5f * k),
+        Expression.stop(18, 22f * k),
+        Expression.stop(20, 52f * k)
+    )
+
+    private fun isRoad(id: String): Boolean {
+        for (k in ROAD_KEYS) if (id.contains(k)) return true
+        return false
     }
 
     private fun themeNight(style: Style) {
@@ -360,38 +655,61 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             val id = layer.id.lowercase()
             try {
                 when (layer) {
-                    is BackgroundLayer -> layer.setProperties(PropertyFactory.backgroundColor("#18202c"))
+                    is BackgroundLayer -> layer.setProperties(PropertyFactory.backgroundColor("#0f1030"))
                     is FillLayer -> {
                         val col = when {
-                            id.contains("water") -> "#1f4466"
+                            id.contains("water") -> "#0b2f73"
                             id.contains("park") || id.contains("wood") || id.contains("grass") ||
-                                id.contains("forest") || id.contains("landcover") || id.contains("garden") -> "#1f3a2c"
-                            id.contains("building") -> "#2c3a50"
-                            else -> "#222d3c"
+                                id.contains("forest") || id.contains("landcover") || id.contains("garden") -> "#16261f"
+                            id.contains("building") -> "#232746"
+                            else -> "#11133a"
                         }
                         layer.setProperties(PropertyFactory.fillColor(col))
                     }
                     is LineLayer -> {
-                        val col = when {
-                            id.contains("casing") || id.contains("outline") -> "#0c1118"
-                            id.contains("motorway") || id.contains("trunk") -> "#ffb74d"
-                            id.contains("primary") -> "#ffe082"
-                            id.contains("secondary") || id.contains("tertiary") -> "#f1f5fb"
-                            id.contains("water") -> "#2b6aa3"
-                            id.contains("rail") || id.contains("transit") -> "#5d6e86"
-                            id.contains("boundary") -> "#4f5f76"
-                            else -> "#b4c2d6"
+                        val casing = id.contains("casing") || id.contains("outline")
+                        if (isRoad(id) && !id.contains("rail")) {
+                            if (casing) {
+                                layer.setProperties(PropertyFactory.lineOpacity(0.0f))
+                            } else {
+                                val k = when {
+                                    id.contains("motorway") || id.contains("trunk") -> 1.35f
+                                    id.contains("primary") -> 1.1f
+                                    id.contains("secondary") || id.contains("tertiary") -> 0.9f
+                                    id.contains("path") || id.contains("pedestrian") || id.contains("track") -> 0.3f
+                                    id.contains("service") -> 0.5f
+                                    else -> 0.65f
+                                }
+                                val col = if (k >= 1.1f) "#62626c" else if (k <= 0.5f) "#3a3a46" else "#4f4f58"
+                                layer.setProperties(
+                                    PropertyFactory.lineColor(col),
+                                    PropertyFactory.lineOpacity(1.0f),
+                                    PropertyFactory.lineWidth(roadWidth(k))
+                                )
+                            }
+                        } else {
+                            val col = when {
+                                id.contains("water") -> "#0b2f73"
+                                id.contains("rail") || id.contains("transit") -> "#3a3c60"
+                                else -> "#2a2d55"
+                            }
+                            layer.setProperties(PropertyFactory.lineColor(col))
                         }
-                        layer.setProperties(PropertyFactory.lineColor(col))
                     }
                     is SymbolLayer -> layer.setProperties(
-                        PropertyFactory.textColor("#f4f7fb"),
-                        PropertyFactory.textHaloColor("#0b1017"),
-                        PropertyFactory.textHaloWidth(1.8f)
+                        PropertyFactory.textColor("#ffffff"),
+                        PropertyFactory.textHaloColor("#000000"),
+                        PropertyFactory.textHaloWidth(1.6f),
+                        PropertyFactory.textSize(
+                            Expression.interpolate(
+                                Expression.linear(), Expression.zoom(),
+                                Expression.stop(14, 12f), Expression.stop(17, 17f), Expression.stop(19, 22f)
+                            )
+                        )
                     )
                     is FillExtrusionLayer -> layer.setProperties(
-                        PropertyFactory.fillExtrusionColor("#4d5f7a"),
-                        PropertyFactory.fillExtrusionOpacity(0.92f)
+                        PropertyFactory.fillExtrusionColor("#434b66"),
+                        PropertyFactory.fillExtrusionOpacity(0.95f)
                     )
                     else -> {
                     }
@@ -403,8 +721,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
 
     // ---------- mũi tên 3D ----------
 
-    private fun ring(lat: Double, lon: Double, bearingDeg: Float, scale: Double): Polygon {
-        val th = Math.toRadians(bearingDeg.toDouble())
+    private fun ring(lat: Double, lon: Double, bearingDeg: Double, scale: Double): Polygon {
+        val th = Math.toRadians(bearingDeg)
         val cosT = cos(th)
         val sinT = sin(th)
         val kLon = 111320.0 * cos(Math.toRadians(lat))
@@ -428,18 +746,6 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         return f
     }
 
-    private fun carCollection(loc: Location): FeatureCollection {
-        val lat = loc.latitude
-        val lon = loc.longitude
-        return FeatureCollection.fromFeatures(
-            listOf(
-                part(ring(lat, lon, heading, 1.35), 0.0, 0.3, "#10151c"),
-                part(ring(lat, lon, heading, 1.0), 0.3, 3.3, "#1e88e5"),
-                part(ring(lat, lon, heading, 0.55), 3.3, 4.6, "#cfe8ff")
-            )
-        )
-    }
-
     private fun addCar(style: Style) {
         style.addSource(GeoJsonSource("car-src"))
         style.addLayer(
@@ -452,11 +758,16 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         )
     }
 
-    private fun updateCar() {
-        val loc = lastLoc ?: return
-        val st = map?.style ?: return
-        val src = st.getSourceAs<GeoJsonSource>("car-src") ?: return
-        src.setGeoJson(carCollection(loc))
+    private fun updateCar(s: Double) {
+        val src = map?.style?.getSourceAs<GeoJsonSource>("car-src") ?: return
+        src.setGeoJson(
+            FeatureCollection.fromFeatures(
+                listOf(
+                    part(ring(dLat, dLon, dHeading, 1.22 * s), 0.0, 0.4 * s, "#000000"),
+                    part(ring(dLat, dLon, dHeading, 1.0 * s), 0.4 * s, 2.6 * s, "#ffffff")
+                )
+            )
+        )
     }
 
     // ---------- giao diện trên màn hình ảo ----------
@@ -492,8 +803,9 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         val tiltB = circle(c, "3D") { toggleTilt() }
         tiltBtn = tiltB
         add(tiltB)
-        add(circle(c, "+") { zoomBy(1.0) })
-        add(circle(c, "−") { zoomBy(-1.0) })
+        add(circle(c, "+") { zoomButton(1.0) })
+        add(circle(c, "−") { zoomButton(-1.0) })
+        add(circle(c, "◎") { recenter() })
 
         val flp = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -514,7 +826,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.START or Gravity.BOTTOM
         )
-        alp.bottomMargin = (58 * d).toInt()
+        alp.bottomMargin = 132
         root.addView(attr, alp)
     }
 
@@ -529,7 +841,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             val opts = MapLibreMapOptions.createFromAttributes(c, null).textureMode(true)
             val mv = MapView(c, opts)
             val fl = FrameLayout(c)
-            fl.setBackgroundColor(Color.rgb(235, 238, 230))
+            fl.setBackgroundColor(Color.rgb(15, 16, 48))
             fl.addView(
                 mv,
                 FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
