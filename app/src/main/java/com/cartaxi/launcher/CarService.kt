@@ -9,12 +9,10 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
-import android.media.AudioManager
 import android.os.BatteryManager
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.view.KeyEvent
 import android.view.Surface
 import androidx.car.app.AppManager
 import androidx.car.app.CarAppService
@@ -29,6 +27,7 @@ import androidx.car.app.model.Template
 import androidx.car.app.navigation.model.NavigationTemplate
 import androidx.car.app.validation.HostValidator
 import java.io.File
+import java.time.LocalDate
 import kotlin.math.roundToInt
 
 class CarService : CarAppService() {
@@ -50,9 +49,11 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
     private var speedKmh: Int? = null
     private var lastFixMs = 0L
     private var selected = 0
-    private var expanded = false
     private var lastDraw = 0L
+    private var evKey = ""
+    private var evLines: List<EventLine> = emptyList()
     private val handler = Handler(Looper.getMainLooper())
+    private val prefs = appCtx.getSharedPreferences("cfg", Context.MODE_PRIVATE)
     private val qrFile = File(appCtx.filesDir, "qr.png")
     private val maps = NativeMap(appCtx, handler)
 
@@ -60,6 +61,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
         override fun run() {
             draw()
             ensureMaps()
+            maps.update(System.currentTimeMillis())
             handler.postDelayed(this, 1000)
         }
     }
@@ -100,42 +102,11 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
         val i = LauncherRenderer.hitIcon(x, y)
         if (i >= 0) {
             selected = i
-            when (i) {
-                0 -> expanded = false
-                1 -> expanded = true
-            }
             draw()
             return
         }
-        if (expanded) {
-            val p = LauncherRenderer.hitMapPoint(x, y)
-            if (p != null) maps.tap(p[0], p[1])
-        } else {
-            val mb = LauncherRenderer.hitMedia(x, y)
-            if (mb >= 0) {
-                sendMediaKey(mb)
-                return
-            }
-            if (LauncherRenderer.hitMiniMap(x, y)) {
-                expanded = true
-                selected = 1
-                draw()
-            }
-        }
-    }
-
-    private fun sendMediaKey(i: Int) {
-        val code = when (i) {
-            0 -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
-            1 -> KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
-            else -> KeyEvent.KEYCODE_MEDIA_NEXT
-        }
-        try {
-            val am = appCtx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
-            am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
-        } catch (e: Exception) {
-        }
+        val p = LauncherRenderer.hitMapPoint(x, y)
+        if (p != null) maps.tap(p[0], p[1])
     }
 
     private fun battery(): Int {
@@ -145,9 +116,24 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
         return if (level < 0 || scale <= 0) -1 else level * 100 / scale
     }
 
+    private fun eventLines(): List<EventLine> {
+        val raw = prefs.getString("events", "") ?: ""
+        val today = LocalDate.now()
+        val key = raw + today.toString()
+        if (key != evKey) {
+            evKey = key
+            evLines = try {
+                Events.lines(raw, today)
+            } catch (e: Exception) {
+                emptyList()
+            }
+        }
+        return evLines
+    }
+
     private fun ensureMaps() {
         if (maps.running()) return
-        val r = LauncherRenderer.areaRect() ?: return
+        val r = LauncherRenderer.mapRect() ?: return
         maps.start(r.width().toInt(), r.height().toInt())
     }
 
@@ -190,11 +176,12 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
                 qrFile = qrFile,
                 nowMs = System.currentTimeMillis(),
                 selectedIcon = selected,
-                mapExpanded = expanded,
+                events = eventLines(),
                 mapFrame = maps.frame,
                 mapFrameW = maps.frameW,
                 mapFrameH = maps.frameH,
-                mapsStatus = maps.status
+                mapsStatus = maps.status,
+                streetName = maps.streetName
             )
             LauncherRenderer.render(canvas, width, height, st)
         } finally {
