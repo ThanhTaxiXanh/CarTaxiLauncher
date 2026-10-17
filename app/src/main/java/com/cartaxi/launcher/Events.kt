@@ -7,7 +7,8 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.temporal.ChronoUnit
 
-// repeat: 0 = hằng năm, 1 = hằng tháng, 2 = một lần
+// repeat: 0 = hằng năm, 1 = hằng tháng, 2 = một lần, 3 = Giao thừa (trước mùng 1 Tết)
+// kind: 0 = sự kiện của bạn, 1 = ngày lễ mặc định, 2 = Mùng một / Rằm
 data class CalEvent(
     val id: Long,
     val title: String,
@@ -15,10 +16,11 @@ data class CalEvent(
     val day: Int,
     val month: Int,
     val year: Int,
-    val repeat: Int
+    val repeat: Int,
+    val kind: Int = 0
 )
 
-data class EventLine(val text: String, val countdown: String, val urgent: Boolean)
+data class EventLine(val text: String, val countdown: String, val urgent: Boolean, val red: Boolean)
 
 object Events {
     fun parse(raw: String?): List<CalEvent> {
@@ -50,6 +52,37 @@ object Events {
         }
         ctx.getSharedPreferences("cfg", Context.MODE_PRIVATE).edit().putString("events", arr.toString()).apply()
     }
+
+    private fun d(id: Long, title: String, lunar: Boolean, day: Int, month: Int, repeat: Int = 0, kind: Int = 1) =
+        CalEvent(id, title, lunar, day, month, 0, repeat, kind)
+
+    fun defaults(): List<CalEvent> = listOf(
+        d(-1, "Mùng một", true, 1, 1, 1, 2),
+        d(-2, "Ngày Rằm", true, 15, 1, 1, 2),
+        d(-10, "Tết Dương lịch", false, 1, 1),
+        d(-11, "Valentine", false, 14, 2),
+        d(-12, "Quốc tế Phụ nữ", false, 8, 3),
+        d(-13, "Giải phóng miền Nam", false, 30, 4),
+        d(-14, "Quốc tế Lao động", false, 1, 5),
+        d(-15, "Quốc tế Thiếu nhi", false, 1, 6),
+        d(-16, "Ngày Gia đình VN", false, 28, 6),
+        d(-17, "Thương binh Liệt sĩ", false, 27, 7),
+        d(-18, "Quốc khánh", false, 2, 9),
+        d(-19, "Phụ nữ Việt Nam", false, 20, 10),
+        d(-20, "Nhà giáo Việt Nam", false, 20, 11),
+        d(-21, "Thành lập QĐND", false, 22, 12),
+        d(-22, "Giáng sinh", false, 25, 12),
+        d(-30, "Tết Nguyên Đán", true, 1, 1),
+        d(-31, "Giao thừa", true, 30, 12, 3),
+        d(-32, "Rằm tháng Giêng", true, 15, 1),
+        d(-33, "Tết Hàn Thực", true, 3, 3),
+        d(-34, "Giỗ Tổ Hùng Vương", true, 10, 3),
+        d(-35, "Lễ Phật Đản", true, 15, 4),
+        d(-36, "Tết Đoan Ngọ", true, 5, 5),
+        d(-37, "Lễ Vu Lan", true, 15, 7),
+        d(-38, "Tết Trung Thu", true, 15, 8),
+        d(-39, "Ông Công Ông Táo", true, 23, 12)
+    )
 
     private fun solarDate(y: Int, m: Int, d: Int): LocalDate? {
         if (m !in 1..12 || d < 1) return null
@@ -91,6 +124,10 @@ object Events {
                     solarDate(ym.year, ym.monthValue, e.day)?.let { cands.add(it) }
                 }
             }
+            3 -> for (dy in -1..2) {
+                val d = lunarDate(1, 1, tl.year + dy)
+                if (d != null) cands.add(d.minusDays(1))
+            }
             else -> {
                 val d = if (e.lunar) lunarDate(e.day, e.month, e.year) else solarDate(e.year, e.month, e.day)
                 if (d != null) cands.add(d)
@@ -108,15 +145,22 @@ object Events {
         }
     }
 
+    private fun rank(e: CalEvent, left: Int): Int = if (e.kind == 2 && left > 1) left + 25 else left
+
     fun lines(raw: String?, today: LocalDate): List<EventLine> {
-        val ups = parse(raw).mapNotNull { e ->
+        val all = parse(raw) + defaults()
+        val ups = all.mapNotNull { e ->
             val d = nextDate(e, today) ?: return@mapNotNull null
             Triple(e, d, ChronoUnit.DAYS.between(today, d).toInt())
-        }.sortedWith(compareBy({ it.third }, { it.first.id })).take(2)
-        return ups.map { (e, _, left) ->
-            val short = when (e.repeat) {
-                1 -> "ngày ${e.day}" + (if (e.lunar) " (ÂL)" else "")
-                2 -> "${e.day}/${e.month}/${e.year}" + (if (e.lunar) " (ÂL)" else "")
+        }
+        val picked = ups.sortedWith(compareBy({ rank(it.first, it.third) }, { it.first.kind }, { it.first.id }))
+            .take(2)
+            .sortedBy { it.third }
+        return picked.map { (e, _, left) ->
+            val short = when {
+                e.kind == 2 || e.repeat == 3 -> ""
+                e.repeat == 1 -> "ngày ${e.day}" + (if (e.lunar) " (ÂL)" else "")
+                e.repeat == 2 -> "${e.day}/${e.month}/${e.year}" + (if (e.lunar) " (ÂL)" else "")
                 else -> "${e.day}/${e.month}" + (if (e.lunar) " (ÂL)" else "")
             }
             val cd = when {
@@ -124,7 +168,8 @@ object Events {
                 left <= 30 -> "Còn $left ngày"
                 else -> ""
             }
-            EventLine("${e.title} $short", cd, left <= 3)
+            val text = if (short.isEmpty()) e.title else "${e.title} $short"
+            EventLine(text, cd, left <= 3, e.kind == 2)
         }
     }
 }
