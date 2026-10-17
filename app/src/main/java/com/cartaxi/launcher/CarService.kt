@@ -90,6 +90,19 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
                 handleClick(x, y)
             }
 
+            override fun onScroll(distanceX: Float, distanceY: Float) {
+                maps.scrollBy(distanceX, distanceY)
+            }
+
+            override fun onFling(velocityX: Float, velocityY: Float) {
+                maps.fling(velocityX, velocityY)
+            }
+
+            override fun onScale(focusX: Float, focusY: Float, scaleFactor: Float) {
+                val p = LauncherRenderer.hitMapPoint(focusX, focusY)
+                if (p != null) maps.pinch(scaleFactor, p[0], p[1])
+            }
+
             override fun onSurfaceDestroyed(container: SurfaceContainer) {
                 stopUpdates()
                 maps.stop()
