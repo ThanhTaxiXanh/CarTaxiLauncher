@@ -41,8 +41,9 @@ object LauncherRenderer {
     private val SOFT = Color.rgb(159, 176, 200)
     private val BLUE = Color.rgb(47, 125, 246)
     private val GREEN_DAY = Color.rgb(76, 217, 100)
-    private val RED = Color.rgb(255, 82, 82)
+    private val RED = Color.rgb(255, 77, 77)
     private val BUBBLE = Color.argb(195, 12, 18, 28)
+    private val STREET = Color.argb(238, 20, 28, 66)
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -100,6 +101,7 @@ object LauncherRenderer {
 
     private var lunarKey = -1
     private var lunarText = ""
+    private var lunarRed = false
 
     // ---------- API cho CarService ----------
 
@@ -135,7 +137,7 @@ object LauncherRenderer {
         val rx = main.right + g
         val availH = a.height() - 2 * g
         val calH = availH * 0.20f
-        val qrH = availH * 0.52f
+        val qrH = availH * 0.55f
         val cal = RectF(rx, a.top, a.right, a.top + calH)
         val qr = RectF(rx, cal.bottom + g, a.right, cal.bottom + g + qrH)
         val signs = RectF(rx, qr.bottom + g, a.right, a.bottom)
@@ -186,8 +188,8 @@ object LauncherRenderer {
         c.drawRoundRect(r, rad, rad, edge)
     }
 
-    private fun bubble(c: Canvas, r: RectF) {
-        fill.color = BUBBLE
+    private fun bubble(c: Canvas, r: RectF, color: Int = BUBBLE) {
+        fill.color = color
         val rad = r.height() / 2f
         c.drawRoundRect(r, rad, rad, fill)
     }
@@ -226,14 +228,14 @@ object LauncherRenderer {
 
     private fun drawStreet(c: Canvas, m: RectF, k: Float, name: String) {
         if (name.isEmpty()) return
-        val cy = m.top + m.height() * 0.65f + 56f * k
-        val maxW = m.width() * 0.8f
+        val cy = m.bottom - 101f * k
+        val maxW = m.width() * 0.84f
         tp.typeface = Typeface.DEFAULT_BOLD
-        tp.textSize = 22f * k
+        tp.textSize = 26f * k
         val w = minOf(tp.measureText(name), maxW)
-        val r = RectF(m.centerX() - w / 2f - 16f * k, cy - 19f * k, m.centerX() + w / 2f + 16f * k, cy + 19f * k)
-        bubble(c, r)
-        textMid(c, name, m.centerX(), cy, 22f * k, Color.WHITE, true, maxW)
+        val r = RectF(m.centerX() - w / 2f - 18f * k, cy - 21f * k, m.centerX() + w / 2f + 18f * k, cy + 21f * k)
+        bubble(c, r, STREET)
+        textMid(c, name, m.centerX(), cy, 26f * k, Color.WHITE, true, maxW)
     }
 
     private fun drawBubbles(c: Canvas, m: RectF, k: Float, st: UiState) {
@@ -318,9 +320,10 @@ object LauncherRenderer {
         tp.textAlign = Paint.Align.LEFT
         tp.textSize = s
         tp.typeface = Typeface.DEFAULT
-        tp.color = Color.WHITE
+        tp.color = if (ev.red) RED else Color.WHITE
         c.drawText(ev.text, x, y, tp)
         if (ev.countdown.isNotEmpty()) {
+            tp.color = Color.WHITE
             c.drawText(sep, x + w1 * f, y, tp)
             tp.typeface = Typeface.DEFAULT_BOLD
             tp.color = if (ev.urgent) RED else ACCENT
@@ -335,25 +338,32 @@ object LauncherRenderer {
         val dd = cal.get(Calendar.DAY_OF_MONTH)
         val mm = cal.get(Calendar.MONTH) + 1
         val yy = cal.get(Calendar.YEAR)
+        val dow = cal.get(Calendar.DAY_OF_WEEK)
         val key = yy * 10000 + mm * 100 + dd
         if (key != lunarKey) {
             val l = LunarCalendar.solarToLunar(dd, mm, yy)
             val leap = if (l.leap) " nhuận" else ""
             lunarText = "ÂL: ${l.day}/${l.month}$leap, ${LunarCalendar.canChi(l.year)}"
+            lunarRed = l.day == 1 || l.day == 15
             lunarKey = key
+        }
+        val dayColor = when (dow) {
+            Calendar.SATURDAY -> GREEN_DAY
+            Calendar.SUNDAY -> RED
+            else -> Color.WHITE
         }
         val hasEv = st.events.isNotEmpty()
         val y0 = if (hasEv) r.top + 14f * k else r.centerY() - 42f * k
 
         val dayStr = dd.toString()
         val dx = r.left + 18f * k
-        text(c, dayStr, dx, y0 + 58f * k, 66f * k, GREEN_DAY, true)
+        text(c, dayStr, dx, y0 + 58f * k, 66f * k, dayColor, true)
         val dw = tp.measureText(dayStr)
         val tx = dx + dw + 14f * k
         val maxW = r.right - tx - 12f * k
-        text(c, DAYS[cal.get(Calendar.DAY_OF_WEEK) - 1], tx, y0 + 24f * k, 22f * k, GREEN_DAY, true, Paint.Align.LEFT, maxW)
+        text(c, DAYS[dow - 1], tx, y0 + 24f * k, 22f * k, dayColor, true, Paint.Align.LEFT, maxW)
         text(c, "Tháng $mm, $yy", tx, y0 + 46f * k, 16f * k, Color.WHITE, false, Paint.Align.LEFT, maxW)
-        text(c, lunarText, tx, y0 + 68f * k, 17f * k, ACCENT, true, Paint.Align.LEFT, maxW)
+        text(c, lunarText, tx, y0 + 68f * k, 17f * k, if (lunarRed) RED else ACCENT, true, Paint.Align.LEFT, maxW)
 
         if (hasEv) {
             linePaint.color = LINE
@@ -369,6 +379,39 @@ object LauncherRenderer {
 
     // ---------- QR ----------
 
+    private fun trimWhite(src: Bitmap): Bitmap {
+        val w = src.width
+        val h = src.height
+        val px = IntArray(w * h)
+        src.getPixels(px, 0, w, 0, 0, w, h)
+        var minX = w
+        var minY = h
+        var maxX = -1
+        var maxY = -1
+        for (y in 0 until h) {
+            val row = y * w
+            for (x in 0 until w) {
+                val p = px[row + x]
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                if (r < 235 || g < 235 || b < 235) {
+                    if (x < minX) minX = x
+                    if (x > maxX) maxX = x
+                    if (y < minY) minY = y
+                    if (y > maxY) maxY = y
+                }
+            }
+        }
+        if (maxX < 0) return src
+        val m = (minOf(w, h) * 0.02f).toInt()
+        val l = maxOf(0, minX - m)
+        val t = maxOf(0, minY - m)
+        val rr = minOf(w, maxX + m + 1)
+        val bb = minOf(h, maxY + m + 1)
+        return Bitmap.createBitmap(src, l, t, rr - l, bb - t)
+    }
+
     private fun loadQr(f: File?): Bitmap? {
         if (f == null || !f.exists()) {
             qrSrc = null
@@ -378,7 +421,7 @@ object LauncherRenderer {
         }
         val stamp = f.lastModified() xor f.length()
         if (stamp != qrStamp) {
-            qrSrc = BitmapFactory.decodeFile(f.path)
+            qrSrc = BitmapFactory.decodeFile(f.path)?.let { trimWhite(it) }
             qrStamp = stamp
             qrScaled = null
         }
@@ -388,9 +431,7 @@ object LauncherRenderer {
     private fun drawQr(c: Canvas, r: RectF, file: File?) {
         val k = r.width() / 318f
         card(c, r, 24f * k)
-        text(c, "QR thanh toán", r.left + 16f * k, r.top + 16f * k + 20f * k * 0.85f, 20f * k, Color.WHITE, true)
-        text(c, "Đưa màn hình để quét", r.left + 16f * k, r.top + 56f * k, 14f * k, MUTED)
-        val panel = RectF(r.left + 12f * k, r.top + 68f * k, r.right - 12f * k, r.bottom - 12f * k)
+        val panel = RectF(r.left + 10f * k, r.top + 10f * k, r.right - 10f * k, r.bottom - 10f * k)
         fill.color = Color.WHITE
         c.drawRoundRect(panel, 18f * k, 18f * k, fill)
 
@@ -420,14 +461,14 @@ object LauncherRenderer {
     private fun drawSigns(c: Canvas, r: RectF) {
         val k = r.width() / 318f
         card(c, r, 24f * k)
-        text(c, "Biển báo & giao thông", r.left + 16f * k, r.top + 36f * k, 18f * k, Color.WHITE, true, Paint.Align.LEFT, r.width() - 32f * k)
-        text(c, "Sẽ có ở bản cập nhật sau", r.left + 16f * k, r.top + 60f * k, 14f * k, MUTED)
-        val cy = r.top + r.height() * 0.66f
-        linePaint.strokeWidth = 7f * k
+        text(c, "Biển báo & giao thông", r.left + 16f * k, r.top + 34f * k, 17f * k, Color.WHITE, true, Paint.Align.LEFT, r.width() - 32f * k)
+        text(c, "Sẽ có ở bản cập nhật sau", r.left + 16f * k, r.top + 56f * k, 13f * k, MUTED)
+        val cy = r.top + r.height() * 0.68f
+        linePaint.strokeWidth = 6f * k
         linePaint.color = Color.argb(70, 214, 69, 65)
         for (i in 0 until 3) {
             val cx = r.left + r.width() * (2 * i + 1) / 6f
-            c.drawCircle(cx, cy, 32f * k, linePaint)
+            c.drawCircle(cx, cy, 26f * k, linePaint)
         }
     }
 
