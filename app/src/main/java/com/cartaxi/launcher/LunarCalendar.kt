@@ -26,6 +26,26 @@ object LunarCalendar {
         return dd + (153 * m + 2) / 5 + 365 * y + y / 4 - y / 100 + y / 400 - 32045
     }
 
+    private fun jdToDate(jd: Int): IntArray {
+        val b: Int
+        val c: Int
+        if (jd > 2299160) {
+            val a = jd + 32044
+            b = (4 * a + 3) / 146097
+            c = a - b * 146097 / 4
+        } else {
+            b = 0
+            c = jd + 32082
+        }
+        val d = (4 * c + 3) / 1461
+        val e = c - 1461 * d / 4
+        val m = (5 * e + 2) / 153
+        val day = e - (153 * m + 2) / 5 + 1
+        val month = m + 3 - 12 * (m / 10)
+        val year = b * 100 + d - 4800 + m / 10
+        return intArrayOf(day, month, year)
+    }
+
     private fun newMoon(k: Double): Double {
         val t = k / 1236.85
         val t2 = t * t
@@ -124,5 +144,30 @@ object LunarCalendar {
         if (lunarMonth > 12) lunarMonth -= 12
         if (lunarMonth >= 11 && diff < 4) lunarYear--
         return LunarDate(lunarDay, lunarMonth, lunarYear, leap)
+    }
+
+    /** Trả về [ngày, tháng, năm] dương lịch, hoặc null nếu không hợp lệ. */
+    fun lunarToSolar(lunarDay: Int, lunarMonth: Int, lunarYear: Int, lunarLeap: Boolean): IntArray? {
+        val a11: Int
+        val b11: Int
+        if (lunarMonth < 11) {
+            a11 = lunarMonth11(lunarYear - 1)
+            b11 = lunarMonth11(lunarYear)
+        } else {
+            a11 = lunarMonth11(lunarYear)
+            b11 = lunarMonth11(lunarYear + 1)
+        }
+        val k = floor(0.5 + (a11 - EPOCH) / SYNODIC).toInt()
+        var off = lunarMonth - 11
+        if (off < 0) off += 12
+        if (b11 - a11 > 365) {
+            val leapOff = leapMonthOffset(a11)
+            var leapMonth = leapOff - 2
+            if (leapMonth < 0) leapMonth += 12
+            if (lunarLeap && lunarMonth != leapMonth) return null
+            if (lunarLeap || off >= leapOff) off++
+        }
+        val monthStart = newMoonDay(k + off)
+        return jdToDate(monthStart + lunarDay - 1)
     }
 }
