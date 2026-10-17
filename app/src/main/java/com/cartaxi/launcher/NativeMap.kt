@@ -260,17 +260,61 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         lastTouchMs = SystemClock.elapsedRealtime()
     }
 
-    fun scrollBy(dx: Float, dy: Float) {
-        val m = map ?: return
-        leaveFollow()
-        m.moveCamera(CameraUpdateFactory.scrollBy(dx, dy))
-    }
+    
+private fun moveCameraByPixels(
+    dx: Float,
+    dy: Float,
+    animate: Boolean = false
+) {
+    val m = map ?: return
+    val position = m.cameraPosition
+    val target = position.target ?: return
 
-    fun fling(vx: Float, vy: Float) {
-        val m = map ?: return
-        leaveFollow()
-        m.animateCamera(CameraUpdateFactory.scrollBy(-vx * 0.12f, -vy * 0.12f), 400)
+    // Ước lượng khoảng cách mặt đất tương ứng với một pixel.
+    val latRad = Math.toRadians(target.latitude)
+    val metersPerPixel =
+        156543.03392 * cos(latRad) / 2.0.pow(position.zoom)
+
+    val metersPerDegree = 111320.0
+    val cosLat = cos(latRad).coerceAtLeast(0.01)
+
+    val newLat = (
+        target.latitude + dy * metersPerPixel / metersPerDegree
+    ).coerceIn(-85.0, 85.0)
+
+    val newLon =
+        target.longitude -
+        dx * metersPerPixel / (metersPerDegree * cosLat)
+
+    val update = CameraUpdateFactory.newCameraPosition(
+        CameraPosition.Builder(position)
+            .target(LatLng(newLat, newLon))
+            .build()
+    )
+
+    if (animate) {
+        m.animateCamera(update, 400)
+    } else {
+        m.moveCamera(update)
     }
+}
+
+fun scrollBy(dx: Float, dy: Float) {
+    if (map == null) return
+    leaveFollow()
+    moveCameraByPixels(dx, dy)
+}
+
+fun fling(vx: Float, vy: Float) {
+    if (map == null) return
+    leaveFollow()
+    moveCameraByPixels(
+        -vx * 0.12f,
+        -vy * 0.12f,
+        animate = true
+    )
+}
+
 
     fun pinch(scale: Float, nx: Float, ny: Float) {
         val m = map ?: return
