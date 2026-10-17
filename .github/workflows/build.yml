@@ -14,7 +14,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - uses: gradle/actions/setup-gradle@v5
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
       - name: Build APK
