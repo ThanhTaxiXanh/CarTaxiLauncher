@@ -3,10 +3,7 @@ package com.cartaxi.launcher
 import android.app.Presentation
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -34,24 +31,41 @@ import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
-import org.maplibre.android.style.layers.Property
+import org.maplibre.android.style.layers.BackgroundLayer
+import org.maplibre.android.style.layers.FillExtrusionLayer
+import org.maplibre.android.style.layers.FillLayer
+import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.android.style.sources.VectorSource
 import org.maplibre.geojson.Feature
+import org.maplibre.geojson.FeatureCollection
+import org.maplibre.geojson.LineString
+import org.maplibre.geojson.MultiLineString
 import org.maplibre.geojson.Point
+import org.maplibre.geojson.Polygon
+import java.util.Calendar
+import kotlin.math.asin
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 class NativeMap(private val appCtx: Context, private val main: Handler) {
     companion object {
-        const val DAY = "https://tiles.openfreemap.org/styles/liberty"
-        const val NIGHT = "https://tiles.openfreemap.org/styles/dark"
-        const val DPI = 220
+        const val STYLE = "https://tiles.openfreemap.org/styles/liberty"
+        const val DPI = 260
+        private val ARROW = arrayOf(
+            doubleArrayOf(0.0, 9.0), doubleArrayOf(5.5, -7.0),
+            doubleArrayOf(0.0, -3.5), doubleArrayOf(-5.5, -7.0)
+        )
     }
 
     var status = "Đang chờ"
     var frame: Bitmap? = null
     var frameW = 0
     var frameH = 0
+    var streetName = ""
     var onFrame: (() -> Unit)? = null
 
     private var vd: VirtualDisplay? = null
@@ -60,17 +74,15 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var map: MapLibreMap? = null
     private var blocked = false
 
-    private var following = true
-    private var northUp = false
     private var tilt = 60.0
     private var zoom = 17.0
-    private var night = false
     private var heading = 0f
     private var lastLoc: Location? = null
-
+    private var night = false
+    private var dnInit = false
+    private var lastStreetMs = 0L
+    private var lastStreetSeen = 0L
     private var tiltBtn: TextView? = null
-    private var compassBtn: TextView? = null
-    private var nightBtn: TextView? = null
 
     fun running(): Boolean = vd != null
 
@@ -81,6 +93,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         val vw = maxOf(64, w / 2 * 2)
         val vh = maxOf(64, h / 2 * 2)
         try {
+            update(System.currentTimeMillis())
             MapLibre.getInstance(appCtx)
             val r = ImageReader.newInstance(vw, vh, PixelFormat.RGBA_8888, 2)
             r.setOnImageAvailableListener({ rd -> onImage(rd) }, main)
@@ -184,32 +197,103 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         }, 60)
     }
 
-    fun action(i: Int) {
-        when (i) {
-            0 -> recenter()
-            1 -> toggleTilt()
-            2 -> toggleNight()
-            3 -> zoomBy(1.0)
-            4 -> zoomBy(-1.0)
-        }
-    }
-
-    // ---------- vị trí ----------
+    // ---------- vị trí, ngày/đêm, tên đường ----------
 
     fun onLocation(loc: Location) {
         lastLoc = loc
         if (loc.hasBearing() && loc.speed > 1.0f) heading = loc.bearing
         updateCar()
-        if (following) applyCamera()
+        applyCamera()
     }
 
-    private fun updateCar() {
+    fun update(nowMs: Long) {
+        val loc = lastLoc
+        val lat = loc?.latitude ?: 21.0285
+        val lon = loc?.longitude ?: 105.8542
+        val el = sunElevation(lat, lon, nowMs)
+        val wantNight = if (!dnInit) el < -2.0 else if (night) el < 1.0 else el < -3.0
+        dnInit = true
+        if (wantNight != night) {
+            night = wantNight
+            if (map != null) loadStyle()
+        }
+        if (nowMs - lastStreetMs > 2000L) {
+            lastStreetMs = nowMs
+            refreshStreet(nowMs)
+        }
+    }
+
+    private fun sunElevation(lat: Double, lon: Double, nowMs: Long): Double {
+        val cal = Calendar.getInstance()
+        cal.timeInMillis = nowMs
+        val n = cal.get(Calendar.DAY_OF_YEAR)
+        val tzH = (cal.get(Calendar.ZONE_OFFSET) + cal.get(Calendar.DST_OFFSET)) / 3600000.0
+        val minutes = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE) + cal.get(Calendar.SECOND) / 60.0
+        val b = Math.toRadians(360.0 / 364.0 * (n - 81))
+        val eot = 9.87 * sin(2 * b) - 7.53 * cos(b) - 1.5 * sin(b)
+        val decl = Math.toRadians(23.45 * sin(Math.toRadians(360.0 / 365.0 * (n - 81))))
+        val tst = minutes + eot + 4 * lon - 60 * tzH
+        val ha = Math.toRadians(tst / 4 - 180)
+        val latR = Math.toRadians(lat)
+        val el = asin(sin(latR) * sin(decl) + cos(latR) * cos(decl) * cos(ha))
+        return Math.toDegrees(el)
+    }
+
+    private fun segDist(ax: Double, ay: Double, bx: Double, by: Double): Double {
+        val dx = bx - ax
+        val dy = by - ay
+        val len2 = dx * dx + dy * dy
+        var t = if (len2 == 0.0) 0.0 else -(ax * dx + ay * dy) / len2
+        t = t.coerceIn(0.0, 1.0)
+        val cx = ax + t * dx
+        val cy = ay + t * dy
+        return sqrt(cx * cx + cy * cy)
+    }
+
+    private fun refreshStreet(nowMs: Long) {
         val loc = lastLoc ?: return
         val st = map?.style ?: return
-        val src = st.getSourceAs<GeoJsonSource>("car-src") ?: return
-        val f = Feature.fromGeometry(Point.fromLngLat(loc.longitude, loc.latitude))
-        f.addNumberProperty("bearing", heading)
-        src.setGeoJson(f)
+        try {
+            val src = st.sources.firstOrNull { it is VectorSource } as? VectorSource ?: return
+            val feats = src.querySourceFeatures(arrayOf("transportation_name"), null)
+            val kx = 111320.0 * cos(Math.toRadians(loc.latitude))
+            val ky = 111320.0
+            var best: String? = null
+            var bestD = 30.0
+            for (f in feats) {
+                val name = try {
+                    f.getStringProperty("name")
+                } catch (e: Exception) {
+                    null
+                } ?: continue
+                val g = f.geometry()
+                val lines: List<List<Point>> = when (g) {
+                    is LineString -> listOf(g.coordinates())
+                    is MultiLineString -> g.coordinates()
+                    else -> continue
+                }
+                for (pts in lines) {
+                    for (i in 0 until pts.size - 1) {
+                        val ax = (pts[i].longitude() - loc.longitude) * kx
+                        val ay = (pts[i].latitude() - loc.latitude) * ky
+                        val bx = (pts[i + 1].longitude() - loc.longitude) * kx
+                        val by = (pts[i + 1].latitude() - loc.latitude) * ky
+                        val d = segDist(ax, ay, bx, by)
+                        if (d < bestD) {
+                            bestD = d
+                            best = name
+                        }
+                    }
+                }
+            }
+            if (best != null) {
+                streetName = best
+                lastStreetSeen = nowMs
+            } else if (nowMs - lastStreetSeen > 8000L) {
+                streetName = ""
+            }
+        } catch (t: Throwable) {
+        }
     }
 
     // ---------- camera ----------
@@ -219,45 +303,22 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         val b = CameraPosition.Builder()
             .zoom(zoom)
             .tilt(tilt)
-            .bearing(if (northUp) 0.0 else heading.toDouble())
+            .bearing(heading.toDouble())
         val loc = lastLoc
-        if (following && loc != null) b.target(LatLng(loc.latitude, loc.longitude))
+        if (loc != null) b.target(LatLng(loc.latitude, loc.longitude))
         m.animateCamera(CameraUpdateFactory.newCameraPosition(b.build()), 600)
-    }
-
-    private fun recenter() {
-        following = true
-        applyCamera()
     }
 
     private fun toggleTilt() {
         tilt = if (tilt > 0.0) 0.0 else 60.0
-        refreshLabels()
+        tiltBtn?.text = if (tilt > 0.0) "3D" else "2D"
         applyCamera()
-    }
-
-    private fun toggleNorth() {
-        northUp = !northUp
-        refreshLabels()
-        applyCamera()
-    }
-
-    private fun toggleNight() {
-        night = !night
-        refreshLabels()
-        loadStyle()
     }
 
     private fun zoomBy(delta: Double) {
         val m = map ?: return
         zoom = (m.cameraPosition.zoom + delta).coerceIn(3.0, 20.0)
         applyCamera()
-    }
-
-    private fun refreshLabels() {
-        tiltBtn?.text = if (tilt > 0.0) "3D" else "2D"
-        compassBtn?.text = if (northUp) "N" else "▲"
-        nightBtn?.text = if (night) "☾" else "☀"
     }
 
     // ---------- bản đồ ----------
@@ -270,15 +331,13 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         m.uiSettings.setAllGesturesEnabled(false)
         m.setPadding(0, (frameH * 0.30f).toInt(), 0, 0)
         val loc = lastLoc
-        val lat = loc?.latitude ?: 21.0285
-        val lon = loc?.longitude ?: 105.8542
         m.moveCamera(
             CameraUpdateFactory.newCameraPosition(
                 CameraPosition.Builder()
-                    .target(LatLng(lat, lon))
+                    .target(LatLng(loc?.latitude ?: 21.0285, loc?.longitude ?: 105.8542))
                     .zoom(zoom)
                     .tilt(tilt)
-                    .bearing(0.0)
+                    .bearing(heading.toDouble())
                     .build()
             )
         )
@@ -287,54 +346,117 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
 
     private fun loadStyle() {
         val m = map ?: return
-        m.setStyle(Style.Builder().fromUri(if (night) NIGHT else DAY)) { style ->
-            status = "Bản đồ đã tải"
+        m.setStyle(Style.Builder().fromUri(STYLE)) { style ->
+            if (night) themeNight(style)
             addCar(style)
             updateCar()
+            status = "Bản đồ đã tải"
             applyCamera()
         }
     }
 
-    private fun addCar(style: Style) {
-        style.addImage("car", carBitmap())
-        style.addSource(GeoJsonSource("car-src"))
-        style.addLayer(
-            SymbolLayer("car-layer", "car-src").withProperties(
-                PropertyFactory.iconImage("car"),
-                PropertyFactory.iconSize(1.0f),
-                PropertyFactory.iconAllowOverlap(true),
-                PropertyFactory.iconIgnorePlacement(true),
-                PropertyFactory.iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_MAP),
-                PropertyFactory.iconPitchAlignment(Property.ICON_PITCH_ALIGNMENT_MAP),
-                PropertyFactory.iconRotate(Expression.get("bearing"))
+    private fun themeNight(style: Style) {
+        for (layer in style.layers) {
+            val id = layer.id.lowercase()
+            try {
+                when (layer) {
+                    is BackgroundLayer -> layer.setProperties(PropertyFactory.backgroundColor("#18202c"))
+                    is FillLayer -> {
+                        val col = when {
+                            id.contains("water") -> "#1f4466"
+                            id.contains("park") || id.contains("wood") || id.contains("grass") ||
+                                id.contains("forest") || id.contains("landcover") || id.contains("garden") -> "#1f3a2c"
+                            id.contains("building") -> "#2c3a50"
+                            else -> "#222d3c"
+                        }
+                        layer.setProperties(PropertyFactory.fillColor(col))
+                    }
+                    is LineLayer -> {
+                        val col = when {
+                            id.contains("casing") || id.contains("outline") -> "#0c1118"
+                            id.contains("motorway") || id.contains("trunk") -> "#ffb74d"
+                            id.contains("primary") -> "#ffe082"
+                            id.contains("secondary") || id.contains("tertiary") -> "#f1f5fb"
+                            id.contains("water") -> "#2b6aa3"
+                            id.contains("rail") || id.contains("transit") -> "#5d6e86"
+                            id.contains("boundary") -> "#4f5f76"
+                            else -> "#b4c2d6"
+                        }
+                        layer.setProperties(PropertyFactory.lineColor(col))
+                    }
+                    is SymbolLayer -> layer.setProperties(
+                        PropertyFactory.textColor("#f4f7fb"),
+                        PropertyFactory.textHaloColor("#0b1017"),
+                        PropertyFactory.textHaloWidth(1.8f)
+                    )
+                    is FillExtrusionLayer -> layer.setProperties(
+                        PropertyFactory.fillExtrusionColor("#4d5f7a"),
+                        PropertyFactory.fillExtrusionOpacity(0.92f)
+                    )
+                    else -> {
+                    }
+                }
+            } catch (t: Throwable) {
+            }
+        }
+    }
+
+    // ---------- mũi tên 3D ----------
+
+    private fun ring(lat: Double, lon: Double, bearingDeg: Float, scale: Double): Polygon {
+        val th = Math.toRadians(bearingDeg.toDouble())
+        val cosT = cos(th)
+        val sinT = sin(th)
+        val kLon = 111320.0 * cos(Math.toRadians(lat))
+        val pts = ArrayList<Point>()
+        for (p in ARROW) {
+            val x = p[0] * scale
+            val y = p[1] * scale
+            val xr = x * cosT + y * sinT
+            val yr = -x * sinT + y * cosT
+            pts.add(Point.fromLngLat(lon + xr / kLon, lat + yr / 111320.0))
+        }
+        pts.add(pts[0])
+        return Polygon.fromLngLats(listOf(pts))
+    }
+
+    private fun part(poly: Polygon, base: Double, top: Double, color: String): Feature {
+        val f = Feature.fromGeometry(poly)
+        f.addNumberProperty("b", base)
+        f.addNumberProperty("h", top)
+        f.addStringProperty("c", color)
+        return f
+    }
+
+    private fun carCollection(loc: Location): FeatureCollection {
+        val lat = loc.latitude
+        val lon = loc.longitude
+        return FeatureCollection.fromFeatures(
+            listOf(
+                part(ring(lat, lon, heading, 1.35), 0.0, 0.3, "#10151c"),
+                part(ring(lat, lon, heading, 1.0), 0.3, 3.3, "#1e88e5"),
+                part(ring(lat, lon, heading, 0.55), 3.3, 4.6, "#cfe8ff")
             )
         )
     }
 
-    private fun carBitmap(): Bitmap {
-        val s = 120
-        val b = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
-        val c = Canvas(b)
-        val p = Path().apply {
-            moveTo(s / 2f, 8f)
-            lineTo(s - 20f, s - 14f)
-            lineTo(s / 2f, s * 0.74f)
-            lineTo(20f, s - 14f)
-            close()
-        }
-        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(30, 136, 229)
-            style = Paint.Style.FILL
-        }
-        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            style = Paint.Style.STROKE
-            strokeWidth = 7f
-            strokeJoin = Paint.Join.ROUND
-        }
-        c.drawPath(p, fill)
-        c.drawPath(p, stroke)
-        return b
+    private fun addCar(style: Style) {
+        style.addSource(GeoJsonSource("car-src"))
+        style.addLayer(
+            FillExtrusionLayer("car-3d", "car-src").withProperties(
+                PropertyFactory.fillExtrusionColor(Expression.toColor(Expression.get("c"))),
+                PropertyFactory.fillExtrusionHeight(Expression.get("h")),
+                PropertyFactory.fillExtrusionBase(Expression.get("b")),
+                PropertyFactory.fillExtrusionOpacity(1.0f)
+            )
+        )
+    }
+
+    private fun updateCar() {
+        val loc = lastLoc ?: return
+        val st = map?.style ?: return
+        val src = st.getSourceAs<GeoJsonSource>("car-src") ?: return
+        src.setGeoJson(carCollection(loc))
     }
 
     // ---------- giao diện trên màn hình ảo ----------
@@ -367,21 +489,11 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             col.addView(b, lp)
         }
 
-        val compass = circle(c, "▲") { toggleNorth() }
         val tiltB = circle(c, "3D") { toggleTilt() }
-        val locate = circle(c, "◎") { recenter() }
-        val plus = circle(c, "+") { zoomBy(1.0) }
-        val minus = circle(c, "−") { zoomBy(-1.0) }
-        val nightB = circle(c, "☀") { toggleNight() }
-        compassBtn = compass
         tiltBtn = tiltB
-        nightBtn = nightB
-        add(compass)
         add(tiltB)
-        add(locate)
-        add(plus)
-        add(minus)
-        add(nightB)
+        add(circle(c, "+") { zoomBy(1.0) })
+        add(circle(c, "−") { zoomBy(-1.0) })
 
         val flp = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -397,14 +509,13 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         attr.setTextColor(Color.rgb(60, 60, 60))
         attr.setBackgroundColor(Color.argb(160, 255, 255, 255))
         attr.setPadding((4 * d).toInt(), 0, (4 * d).toInt(), 0)
-        root.addView(
-            attr,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.START or Gravity.BOTTOM
-            )
+        val alp = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.START or Gravity.BOTTOM
         )
+        alp.bottomMargin = (58 * d).toInt()
+        root.addView(attr, alp)
     }
 
     private inner class MapPresentation(ctx: Context, display: Display) : Presentation(ctx, display) {
@@ -429,7 +540,6 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             mapView = mv
             mv.onCreate(null)
             mv.getMapAsync { m -> onMapReady(m) }
-            refreshLabels()
         }
     }
 }
