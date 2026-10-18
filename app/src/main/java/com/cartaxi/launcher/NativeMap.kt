@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.PointF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.hardware.display.DisplayManager
@@ -15,6 +16,7 @@ import android.media.ImageReader
 import android.os.Bundle
 import android.os.Handler
 import android.os.SystemClock
+import android.util.TypedValue
 import android.view.Display
 import android.view.Gravity
 import android.view.MotionEvent
@@ -52,6 +54,7 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.ln
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
@@ -62,9 +65,11 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     companion object {
         const val STYLE = "https://tiles.openfreemap.org/styles/liberty"
         const val DPI = 260
-        private val ARROW = arrayOf(
-            doubleArrayOf(0.0, 12.0), doubleArrayOf(8.0, -9.0),
-            doubleArrayOf(0.0, -4.5), doubleArrayOf(-8.0, -9.0)
+        private const val ARROW_PX = 46.0
+        // x theo bề ngang, y theo chiều dài (đơn vị tương đối)
+        private val SHAPE = arrayOf(
+            doubleArrayOf(0.0, 0.55), doubleArrayOf(0.5, -0.45),
+            doubleArrayOf(0.0, -0.15), doubleArrayOf(-0.5, -0.45)
         )
         private val ROAD_KEYS = arrayOf(
             "road", "highway", "street", "motorway", "trunk", "primary", "secondary",
@@ -106,6 +111,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var fixMs = 0L
     private var lastRawLat = 0.0
     private var lastRawLon = 0.0
+    private var anchorLat = 0.0
+    private var anchorLon = 0.0
     private var tLat = 21.0285
     private var tLon = 105.8542
     private var tHeading = 0.0
@@ -255,66 +262,36 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private fun leaveFollow() {
         if (following) {
             following = false
-            manualZoom = dZoom
+            manualZoom = map?.cameraPosition?.zoom ?: dZoom
         }
         lastTouchMs = SystemClock.elapsedRealtime()
     }
 
-    
-private fun moveCameraByPixels(
-    dx: Float,
-    dy: Float,
-    animate: Boolean = false
-) {
-    val m = map ?: return
-    val position = m.cameraPosition
-    val target = position.target ?: return
-
-    // Ước lượng khoảng cách mặt đất tương ứng với một pixel.
-    val latRad = Math.toRadians(target.latitude)
-    val metersPerPixel =
-        156543.03392 * cos(latRad) / 2.0.pow(position.zoom)
-
-    val metersPerDegree = 111320.0
-    val cosLat = cos(latRad).coerceAtLeast(0.01)
-
-    val newLat = (
-        target.latitude + dy * metersPerPixel / metersPerDegree
-    ).coerceIn(-85.0, 85.0)
-
-    val newLon =
-        target.longitude -
-        dx * metersPerPixel / (metersPerDegree * cosLat)
-
-    val update = CameraUpdateFactory.newCameraPosition(
-        CameraPosition.Builder(position)
-            .target(LatLng(newLat, newLon))
-            .build()
-    )
-
-    if (animate) {
-        m.animateCamera(update, 400)
-    } else {
-        m.moveCamera(update)
+    // Dịch tâm bản đồ theo pixel trên màn hình (đúng với mọi góc xoay, nghiêng, zoom)
+    private fun panByScreen(dx: Float, dy: Float, animate: Boolean) {
+        val m = map ?: return
+        val pos = m.cameraPosition
+        val target = pos.target ?: return
+        val proj = m.projection
+        val c = proj.toScreenLocation(target)
+        val ll = proj.fromScreenLocation(PointF(c.x + dx, c.y + dy))
+        val update = CameraUpdateFactory.newCameraPosition(
+            CameraPosition.Builder(pos).target(ll).build()
+        )
+        if (animate) m.animateCamera(update, 400) else m.moveCamera(update)
     }
-}
 
-fun scrollBy(dx: Float, dy: Float) {
-    if (map == null) return
-    leaveFollow()
-    moveCameraByPixels(dx, dy)
-}
+    fun scrollBy(dx: Float, dy: Float) {
+        if (map == null) return
+        leaveFollow()
+        panByScreen(dx, dy, false)
+    }
 
-fun fling(vx: Float, vy: Float) {
-    if (map == null) return
-    leaveFollow()
-    moveCameraByPixels(
-        -vx * 0.12f,
-        -vy * 0.12f,
-        animate = true
-    )
-}
-
+    fun fling(vx: Float, vy: Float) {
+        if (map == null) return
+        leaveFollow()
+        panByScreen(-vx * 0.12f, -vy * 0.12f, true)
+    }
 
     fun pinch(scale: Float, nx: Float, ny: Float) {
         val m = map ?: return
@@ -356,6 +333,14 @@ fun fling(vx: Float, vy: Float) {
         return sqrt(dx * dx + dy * dy)
     }
 
+    private fun angDiff(a: Double, b: Double): Double = abs(((a - b + 540.0) % 360.0) - 180.0)
+
+    private fun bearingTo(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val dx = (lon2 - lon1) * cos(Math.toRadians((lat1 + lat2) / 2))
+        val dy = lat2 - lat1
+        return (Math.toDegrees(atan2(dx, dy)) + 360.0) % 360.0
+    }
+
     fun onLocation(loc: Location) {
         val now = SystemClock.elapsedRealtime()
         val sp = if (loc.hasSpeed()) loc.speed else 0f
@@ -369,12 +354,33 @@ fun fling(vx: Float, vy: Float) {
         lastRawLon = loc.longitude
         moving = if (moving) sp > 0.9f else sp > 2.0f
         speedMs = if (moving) sp else 0f
-        val hd = if (loc.hasBearing() && moving) loc.bearing.toDouble() else Double.NaN
+
+        // Hướng đi: ưu tiên hướng GPS, đối chiếu với quãng đường thực tế
+        var hd = Double.NaN
+        if (!hasFix) {
+            anchorLat = loc.latitude
+            anchorLon = loc.longitude
+        }
+        if (moving) {
+            if (loc.hasBearing()) hd = loc.bearing.toDouble()
+            if (dist(anchorLat, anchorLon, loc.latitude, loc.longitude) >= 8.0) {
+                val b = bearingTo(anchorLat, anchorLon, loc.latitude, loc.longitude)
+                if (hd.isNaN() || angDiff(b, hd) > 50.0) hd = b
+                anchorLat = loc.latitude
+                anchorLon = loc.longitude
+            }
+        } else {
+            anchorLat = loc.latitude
+            anchorLon = loc.longitude
+        }
+
         if (!hasFix) {
             hasFix = true
-            val s = snap(loc.latitude, loc.longitude, hd)
+            val s = snap(loc.latitude, loc.longitude, Double.NaN)
             snapped = s != null
-            setTarget(s ?: SnapPoint(loc.latitude, loc.longitude, if (hd.isNaN()) 0.0 else hd))
+            tLat = s?.lat ?: loc.latitude
+            tLon = s?.lon ?: loc.longitude
+            tHeading = 0.0
             dLat = tLat
             dLon = tLon
             dHeading = tHeading
@@ -383,16 +389,17 @@ fun fling(vx: Float, vy: Float) {
         }
         fixMs = now
         if (moving) {
-            val s = snap(loc.latitude, loc.longitude, if (hd.isNaN()) tHeading else hd)
+            val s = snap(loc.latitude, loc.longitude, hd)
             if (s != null) snapped = true
-            setTarget(s ?: SnapPoint(loc.latitude, loc.longitude, if (hd.isNaN()) tHeading else hd))
+            tLat = s?.lat ?: loc.latitude
+            tLon = s?.lon ?: loc.longitude
+            val cand = when {
+                s != null && !s.heading.isNaN() -> s.heading
+                !hd.isNaN() -> hd
+                else -> tHeading
+            }
+            if (angDiff(cand, tHeading) >= 4.0) tHeading = cand
         }
-    }
-
-    private fun setTarget(s: SnapPoint) {
-        tLat = s.lat
-        tLon = s.lon
-        tHeading = s.heading
     }
 
     // ---------- hút vào làn đường ----------
@@ -439,11 +446,13 @@ fun fling(vx: Float, vy: Float) {
         }
     }
 
+    // hd = NaN: đứng yên, chỉ hút vị trí, không đổi hướng
     private fun snap(lat: Double, lon: Double, hd: Double): SnapPoint? {
         ensureRoads(lat, lon)
         if (segs.isEmpty()) return null
         val kx = 111320.0 * cos(Math.toRadians(lat))
         val ky = 111320.0
+        val ref = if (hd.isNaN()) tHeading else hd
         var bestScore = 1e9
         var bx = 0.0
         var by = 0.0
@@ -465,13 +474,10 @@ fun fling(vx: Float, vy: Float) {
             val d = sqrt(px * px + py * py)
             if (d > 25.0) continue
             val segB = Math.toDegrees(atan2(dx, dy))
-            var score = d
-            if (!hd.isNaN()) {
-                val diff = abs(((segB - hd + 540.0) % 360.0) - 180.0)
-                val a = min(diff, 180.0 - diff)
-                score += 0.3 * a
-                if (a > 75.0) score += 30.0
-            }
+            val a0 = angDiff(segB, ref)
+            val a = min(a0, 180.0 - a0)
+            if (!hd.isNaN() && a > 45.0) continue
+            val score = d + (if (hd.isNaN()) 0.0 else 0.25 * a)
             if (score < bestScore) {
                 bestScore = score
                 bx = px
@@ -482,17 +488,15 @@ fun fling(vx: Float, vy: Float) {
             }
         }
         if (!found) return null
-        val ref = if (hd.isNaN()) tHeading else hd
         var tb = bBearing
-        val dd = abs(((tb - ref + 540.0) % 360.0) - 180.0)
-        if (dd > 90.0) tb += 180.0
+        if (angDiff(tb, ref) > 90.0) tb += 180.0
         tb = ((tb % 360.0) + 360.0) % 360.0
         if (bOneway == 0.0) {
             val br = Math.toRadians(tb + 90.0)
             bx += sin(br) * 1.6
             by += cos(br) * 1.6
         }
-        return SnapPoint(lat + by / ky, lon + bx / kx, tb)
+        return SnapPoint(lat + by / ky, lon + bx / kx, if (hd.isNaN()) Double.NaN else tb)
     }
 
     // ---------- vòng lặp 30 khung hình / giây ----------
@@ -501,7 +505,7 @@ fun fling(vx: Float, vy: Float) {
         kmh <= 8.0 -> 18.0
         kmh <= 40.0 -> 18.0 - (kmh - 8.0) / 32.0
         kmh <= 80.0 -> 17.0 - (kmh - 40.0) / 40.0 * 0.8
-        else -> maxOf(15.6, 16.2 - (kmh - 80.0) / 40.0 * 0.6)
+        else -> max(15.6, 16.2 - (kmh - 80.0) / 40.0 * 0.6)
     }
 
     private fun step() {
@@ -526,7 +530,7 @@ fun fling(vx: Float, vy: Float) {
         dLon += (pLon - dLon) * a
 
         val diff = ((tHeading - dHeading + 540.0) % 360.0) - 180.0
-        dHeading = (((dHeading + diff * (1.0 - exp(-dt / 0.3))) % 360.0) + 360.0) % 360.0
+        dHeading = (((dHeading + diff * (1.0 - exp(-dt / 0.45))) % 360.0) + 360.0) % 360.0
 
         smKmh += ((if (moving) speedMs * 3.6 else 0.0) - smKmh) * (1.0 - exp(-dt / 1.5))
         if (userZoom != null && now - userZoomMs > 15000L) userZoom = null
@@ -534,8 +538,6 @@ fun fling(vx: Float, vy: Float) {
         dZoom += (targetZoom - dZoom) * (1.0 - exp(-dt / 0.7))
         if (!following && now - lastTouchMs > 12000L) recenter()
 
-        val zs = if (following) dZoom else manualZoom
-        updateCar(2.0.pow(18.0 - zs).coerceIn(0.8, 5.0))
         if (following) {
             m.moveCamera(
                 CameraUpdateFactory.newCameraPosition(
@@ -548,6 +550,7 @@ fun fling(vx: Float, vy: Float) {
                 )
             )
         }
+        updateCar(m)
     }
 
     // ---------- ngày / đêm, tên đường ----------
@@ -565,7 +568,8 @@ fun fling(vx: Float, vy: Float) {
         if (hasFix && !snapped) {
             val s = snap(tLat, tLon, Double.NaN)
             if (s != null) {
-                setTarget(s)
+                tLat = s.lat
+                tLon = s.lon
                 snapped = true
             }
         }
@@ -763,17 +767,17 @@ fun fling(vx: Float, vy: Float) {
         }
     }
 
-    // ---------- mũi tên 3D ----------
+    // ---------- mũi tên 3D (kích thước cố định trên màn hình) ----------
 
-    private fun ring(lat: Double, lon: Double, bearingDeg: Double, scale: Double): Polygon {
+    private fun ring(lat: Double, lon: Double, bearingDeg: Double, lenG: Double, widM: Double, scale: Double): Polygon {
         val th = Math.toRadians(bearingDeg)
         val cosT = cos(th)
         val sinT = sin(th)
         val kLon = 111320.0 * cos(Math.toRadians(lat))
         val pts = ArrayList<Point>()
-        for (p in ARROW) {
-            val x = p[0] * scale
-            val y = p[1] * scale
+        for (p in SHAPE) {
+            val x = p[0] * widM * scale
+            val y = p[1] * lenG * scale
             val xr = x * cosT + y * sinT
             val yr = -x * sinT + y * cosT
             pts.add(Point.fromLngLat(lon + xr / kLon, lat + yr / 111320.0))
@@ -802,13 +806,20 @@ fun fling(vx: Float, vy: Float) {
         )
     }
 
-    private fun updateCar(s: Double) {
-        val src = map?.style?.getSourceAs<GeoJsonSource>("car-src") ?: return
+    private fun updateCar(m: MapLibreMap) {
+        val src = m.style?.getSourceAs<GeoJsonSource>("car-src") ?: return
+        val zoom = m.cameraPosition.zoom
+        val mpp = 78271.517 * cos(Math.toRadians(dLat)) / 2.0.pow(zoom) / (DPI / 160.0)
+        val lenM = ARROW_PX * mpp
+        val lenG = lenM / max(0.55, cos(Math.toRadians(tilt)))
+        val widM = 0.62 * lenM
+        val h1 = 6.0 * mpp
+        val h2 = 13.0 * mpp
         src.setGeoJson(
             FeatureCollection.fromFeatures(
                 listOf(
-                    part(ring(dLat, dLon, dHeading, 1.22 * s), 0.0, 0.4 * s, "#000000"),
-                    part(ring(dLat, dLon, dHeading, 1.0 * s), 0.4 * s, 2.6 * s, "#ffffff")
+                    part(ring(dLat, dLon, dHeading, lenG, widM, 1.16), 0.0, h1, "#000000"),
+                    part(ring(dLat, dLon, dHeading, lenG, widM, 1.0), h1, h2, "#ffffff")
                 )
             )
         )
@@ -816,10 +827,10 @@ fun fling(vx: Float, vy: Float) {
 
     // ---------- giao diện trên màn hình ảo ----------
 
-    private fun circle(c: Context, label: String, onClick: () -> Unit): TextView {
+    private fun circle(c: Context, label: String, size: Int, onClick: () -> Unit): TextView {
         val tv = TextView(c)
         tv.text = label
-        tv.textSize = 17f
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_PX, size * 0.34f)
         tv.setTextColor(Color.WHITE)
         tv.typeface = Typeface.DEFAULT_BOLD
         tv.gravity = Gravity.CENTER
@@ -832,9 +843,8 @@ fun fling(vx: Float, vy: Float) {
     }
 
     private fun buildOverlay(c: Context, root: FrameLayout) {
-        val d = c.resources.displayMetrics.density
-        val size = (50 * d).toInt()
-        val gap = (8 * d).toInt()
+        val size = (frameW * 0.15f).toInt().coerceIn(52, 84)
+        val gap = (size * 0.14f).toInt()
         val col = LinearLayout(c)
         col.orientation = LinearLayout.VERTICAL
 
@@ -844,33 +854,33 @@ fun fling(vx: Float, vy: Float) {
             col.addView(b, lp)
         }
 
-        val tiltB = circle(c, "3D") { toggleTilt() }
+        val tiltB = circle(c, "3D", size) { toggleTilt() }
         tiltBtn = tiltB
         add(tiltB)
-        add(circle(c, "+") { zoomButton(1.0) })
-        add(circle(c, "−") { zoomButton(-1.0) })
-        add(circle(c, "◎") { recenter() })
+        add(circle(c, "+", size) { zoomButton(1.0) })
+        add(circle(c, "−", size) { zoomButton(-1.0) })
+        add(circle(c, "◎", size) { recenter() })
 
         val flp = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.END or Gravity.CENTER_VERTICAL
         )
-        flp.marginEnd = (10 * d).toInt()
+        flp.marginEnd = (size * 0.2f).toInt()
         root.addView(col, flp)
 
         val attr = TextView(c)
         attr.text = "© OpenStreetMap contributors · OpenFreeMap"
-        attr.textSize = 9f
+        attr.setTextSize(TypedValue.COMPLEX_UNIT_PX, maxOf(11f, frameW * 0.026f))
         attr.setTextColor(Color.rgb(60, 60, 60))
         attr.setBackgroundColor(Color.argb(160, 255, 255, 255))
-        attr.setPadding((4 * d).toInt(), 0, (4 * d).toInt(), 0)
+        attr.setPadding(6, 0, 6, 0)
         val alp = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.START or Gravity.BOTTOM
         )
-        alp.bottomMargin = 132
+        alp.bottomMargin = (frameH * 0.17f).toInt()
         root.addView(attr, alp)
     }
 
@@ -898,4 +908,4 @@ fun fling(vx: Float, vy: Float) {
             mv.getMapAsync { m -> onMapReady(m) }
         }
     }
-}
+
