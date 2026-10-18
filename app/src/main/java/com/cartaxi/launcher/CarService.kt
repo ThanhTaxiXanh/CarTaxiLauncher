@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.location.GnssStatus
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -69,8 +70,26 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
     private val locListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
             lastFixMs = SystemClock.uptimeMillis()
-            speedKmh = if (location.hasSpeed()) (location.speed * 3.6f).roundToInt() else null
+            speedKmh = if (location.hasSpeed()) {
+                if (location.speed < 0.6f) 0 else (location.speed * 3.6f).roundToInt()
+            } else {
+                null
+            }
             maps.onLocation(location)
+        }
+    }
+
+    private val gnssCallback = object : GnssStatus.Callback() {
+        override fun onSatelliteStatusChanged(status: GnssStatus) {
+            var used = 0
+            var sum = 0.0
+            for (i in 0 until status.satelliteCount) {
+                if (status.usedInFix(i)) {
+                    used++
+                    sum += status.getCn0DbHz(i)
+                }
+            }
+            maps.setGnss(used, if (used > 0) sum / used else 0.0)
         }
     }
 
@@ -159,6 +178,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
             val lm = appCtx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
             lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let { maps.onLocation(it) }
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locListener, Looper.getMainLooper())
+            lm.registerGnssStatusCallback(appCtx.mainExecutor, gnssCallback)
         } catch (e: Exception) {
         }
     }
@@ -168,6 +188,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
         try {
             val lm = appCtx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
             lm.removeUpdates(locListener)
+            lm.unregisterGnssStatusCallback(gnssCallback)
         } catch (e: Exception) {
         }
     }
@@ -185,6 +206,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
             val st = UiState(
                 speedKmh = speedKmh,
                 gpsFix = lastFixMs != 0L && SystemClock.uptimeMillis() - lastFixMs < 5000L,
+                satellites = maps.satUsed,
                 batteryPct = battery(),
                 qrFile = qrFile,
                 nowMs = System.currentTimeMillis(),
