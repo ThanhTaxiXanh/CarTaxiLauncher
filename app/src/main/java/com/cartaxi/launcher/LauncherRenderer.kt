@@ -16,6 +16,7 @@ import java.util.Calendar
 data class UiState(
     val speedKmh: Int?,
     val gpsFix: Boolean,
+    val satellites: Int,
     val batteryPct: Int,
     val qrFile: File?,
     val nowMs: Long,
@@ -64,6 +65,7 @@ object LauncherRenderer {
     }
     private val srcRect = Rect()
     private val clip = Path()
+    private val tri = Path()
 
     private val DAYS = arrayOf("Chủ nhật", "Thứ hai", "Thứ ba", "Thứ tư", "Thứ năm", "Thứ sáu", "Thứ bảy")
 
@@ -135,7 +137,6 @@ object LauncherRenderer {
         val signs: RectF
 
         if (a.width() >= a.height() * 1.3f) {
-            // Màn hình ngang: icon | bản đồ | (lịch trên, QR + biển báo dưới)
             val avail = a.width() - 2 * g
             val iconW = avail * 0.075f
             val mapW = avail * 0.44f
@@ -149,7 +150,6 @@ object LauncherRenderer {
             qr = RectF(rx, lowTop, rx + qrW, a.bottom)
             signs = RectF(qr.right + g, lowTop, a.right, a.bottom)
         } else {
-            // Màn hình dọc hoặc gần vuông
             val avail = a.width() - 2 * g
             val iconW = avail * 0.0948f
             val mainW = avail * 0.5463f
@@ -242,7 +242,6 @@ object LauncherRenderer {
 
         drawStreet(c, m, k, st.streetName)
         drawBubbles(c, m, k, st)
-        drawChips(c, m, k, st)
 
         c.restore()
         c.drawRoundRect(m, rad, rad, edge)
@@ -251,7 +250,8 @@ object LauncherRenderer {
     private fun drawStreet(c: Canvas, m: RectF, k: Float, name: String) {
         if (name.isEmpty()) return
         val size = maxOf(14f, 26f * k)
-        val cy = m.bottom - 101f * k
+        val ay = m.top + m.height() * 0.73f
+        val cy = minOf(ay + 70f * k, m.bottom - 34f * k)
         val maxW = m.width() * 0.84f
         tp.typeface = Typeface.DEFAULT_BOLD
         tp.textSize = size
@@ -259,6 +259,79 @@ object LauncherRenderer {
         val r = RectF(m.centerX() - w / 2f - 18f * k, cy - size * 0.8f, m.centerX() + w / 2f + 18f * k, cy + size * 0.8f)
         bubble(c, r, STREET)
         textMid(c, name, m.centerX(), cy, size, Color.WHITE, true, maxW)
+    }
+
+    // ---------- biểu tượng trạng thái (trên cùng bên phải) ----------
+
+    private fun statusPill(
+        c: Canvas, right: Float, cy: Float, d: Float, label: String,
+        drawIcon: (Float, Float) -> Unit
+    ): Float {
+        val ts = d * 0.42f
+        tp.typeface = Typeface.DEFAULT_BOLD
+        tp.textSize = ts
+        val tw = if (label.isEmpty()) 0f else tp.measureText(label) + d * 0.12f
+        val w = d + tw
+        val r = RectF(right - w, cy - d / 2f, right, cy + d / 2f)
+        bubble(c, r)
+        drawIcon(r.left + d / 2f, cy)
+        if (label.isNotEmpty()) {
+            text(c, label, r.left + d * 0.92f, cy + ts * 0.36f, ts, Color.WHITE, true)
+        }
+        return r.left
+    }
+
+    private fun iconPin(c: Canvas, cx: Float, cy: Float, d: Float, color: Int) {
+        val r = d * 0.2f
+        val py = cy - d * 0.07f
+        fill.color = color
+        c.drawCircle(cx, py, r, fill)
+        tri.reset()
+        tri.moveTo(cx - r * 0.85f, py + r * 0.55f)
+        tri.lineTo(cx + r * 0.85f, py + r * 0.55f)
+        tri.lineTo(cx, cy + d * 0.3f)
+        tri.close()
+        c.drawPath(tri, fill)
+        fill.color = Color.rgb(12, 18, 28)
+        c.drawCircle(cx, py, r * 0.42f, fill)
+    }
+
+    private fun iconBattery(c: Canvas, cx: Float, cy: Float, d: Float, pct: Int) {
+        val w = d * 0.5f
+        val h = d * 0.27f
+        val body = RectF(cx - w / 2f - d * 0.03f, cy - h / 2f, cx + w / 2f - d * 0.03f, cy + h / 2f)
+        linePaint.color = Color.WHITE
+        linePaint.strokeWidth = maxOf(1.5f, d * 0.05f)
+        c.drawRoundRect(body, h * 0.22f, h * 0.22f, linePaint)
+        fill.color = Color.WHITE
+        c.drawRect(body.right + d * 0.015f, cy - h * 0.2f, body.right + d * 0.06f, cy + h * 0.2f, fill)
+        val level = (pct.coerceIn(0, 100)) / 100f
+        fill.color = when {
+            pct < 0 -> MUTED
+            pct <= 15 -> RED
+            pct <= 30 -> ACCENT
+            else -> GREEN_DAY
+        }
+        val inset = d * 0.045f
+        c.drawRect(body.left + inset, body.top + inset, body.left + inset + (body.width() - 2 * inset) * level, body.bottom - inset, fill)
+    }
+
+    private fun iconCar(c: Canvas, cx: Float, cy: Float, d: Float, color: Int) {
+        fill.color = color
+        tri.reset()
+        tri.moveTo(cx - 0.17f * d, cy - 0.01f * d)
+        tri.lineTo(cx - 0.1f * d, cy - 0.15f * d)
+        tri.lineTo(cx + 0.1f * d, cy - 0.15f * d)
+        tri.lineTo(cx + 0.17f * d, cy - 0.01f * d)
+        tri.close()
+        c.drawPath(tri, fill)
+        c.drawRoundRect(RectF(cx - 0.25f * d, cy - 0.03f * d, cx + 0.25f * d, cy + 0.13f * d), 0.045f * d, 0.045f * d, fill)
+        fill.color = Color.rgb(12, 18, 28)
+        c.drawCircle(cx - 0.13f * d, cy + 0.14f * d, 0.075f * d, fill)
+        c.drawCircle(cx + 0.13f * d, cy + 0.14f * d, 0.075f * d, fill)
+        fill.color = color
+        c.drawCircle(cx - 0.13f * d, cy + 0.14f * d, 0.045f * d, fill)
+        c.drawCircle(cx + 0.13f * d, cy + 0.14f * d, 0.045f * d, fill)
     }
 
     private fun drawBubbles(c: Canvas, m: RectF, k: Float, st: UiState) {
@@ -280,12 +353,28 @@ object LauncherRenderer {
         text(c, hhmm, tb.left + padX, ty, tSize, Color.WHITE, true)
         text(c, sec, tb.left + padX + w1 + 8f * k, ty, sSize, ACCENT, true)
 
+        // hàng biểu tượng ở trên cùng bên phải: GPS, pin, Android Auto
+        val d = maxOf(26f, 38f * k)
+        val iconCy = m.top + 16f * k + d / 2f
+        val gap = maxOf(5f, 8f * k)
+        var right = m.right - 16f * k
+        right = statusPill(c, right, iconCy, d, "") { x, y -> iconCar(c, x, y, d, GREEN_DAY) } - gap
+        val batLabel = if (st.batteryPct >= 0) "${st.batteryPct}%" else ""
+        right = statusPill(c, right, iconCy, d, batLabel) { x, y -> iconBattery(c, x, y, d, st.batteryPct) } - gap
+        val gpsLabel = if (st.satellites > 0) "${st.satellites}" else ""
+        statusPill(c, right, iconCy, d, gpsLabel) { x, y ->
+            iconPin(c, x, y, d, if (st.gpsFix) GREEN_DAY else ACCENT)
+        }
+
+        // chip trạng thái nằm dưới hàng biểu tượng
         val label = if ((st.speedKmh ?: 0) > 3) "Đang chạy" else "Đang dừng"
         val lSize = maxOf(11f, 16f * k)
+        val chipH = maxOf(24f, 36f * k)
         tp.typeface = Typeface.DEFAULT_BOLD
         tp.textSize = lSize
         val cw = tp.measureText(label) + 32f * k
-        val chip = RectF(m.right - 16f * k - cw, tb.centerY() - 18f * k, m.right - 16f * k, tb.centerY() + 18f * k)
+        val chipCy = iconCy + d / 2f + gap + chipH / 2f
+        val chip = RectF(m.right - 16f * k - cw, chipCy - chipH / 2f, m.right - 16f * k, chipCy + chipH / 2f)
         bubble(c, chip)
         textMid(c, label, chip.centerX(), chip.centerY(), lSize, SOFT, true)
 
@@ -302,31 +391,6 @@ object LauncherRenderer {
         val sy = sb.centerY() + nSize * 0.36f
         text(c, spd, sb.left + padX, sy, nSize, Color.WHITE, true)
         text(c, "KM/H", sb.left + padX + w3 + 10f * k, sy, uSize, MUTED, true)
-    }
-
-    private fun drawChips(c: Canvas, m: RectF, k: Float, st: UiState) {
-        val left = m.left + 14f * k
-        val right = m.right - 14f * k
-        val bottom = m.bottom - 14f * k
-        val h = 58f * k
-        val gap = 8f * k
-        val w = (right - left - 2 * gap) / 3f
-        val items = arrayOf(
-            "GPS" to (if (st.gpsFix) "Tốt" else "Đang bắt"),
-            "Pin điện thoại" to (if (st.batteryPct >= 0) "${st.batteryPct}%" else "—"),
-            "Android Auto" to "Đã kết nối"
-        )
-        val s1 = maxOf(11f, 12f * k)
-        val s2 = maxOf(13f, 16f * k)
-        for (i in 0 until 3) {
-            val x = left + i * (w + gap)
-            val rc = RectF(x, bottom - h, x + w, bottom)
-            fill.color = Color.argb(224, 18, 26, 39)
-            c.drawRoundRect(rc, 14f * k, 14f * k, fill)
-            c.drawRoundRect(rc, 14f * k, 14f * k, edge)
-            text(c, items[i].first, rc.left + 10f * k, rc.top + 22f * k, s1, MUTED, false, Paint.Align.LEFT, w - 18f * k)
-            text(c, items[i].second, rc.left + 10f * k, rc.top + 46f * k, s2, Color.WHITE, true, Paint.Align.LEFT, w - 18f * k)
-        }
     }
 
     // ---------- lịch và sự kiện ----------
