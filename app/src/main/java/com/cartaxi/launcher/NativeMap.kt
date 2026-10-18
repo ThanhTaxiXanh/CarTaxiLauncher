@@ -905,7 +905,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             root = fl
             mapView = mv
             mv.onCreate(null)
-            mv.getMapAsync { m -> onMapReady(m) 
-						}
+            mv.getMapAsync { m -> onMapReady(m) }
+			}
         }
     }
