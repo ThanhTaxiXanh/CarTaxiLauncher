@@ -35,7 +35,6 @@ object LauncherRenderer {
     private val CARD = Color.rgb(21, 29, 43)
     private val PILL = Color.rgb(18, 26, 39)
     private val LINE = Color.rgb(36, 48, 68)
-    private val CHIP = Color.rgb(30, 40, 56)
     private val ACCENT = Color.rgb(255, 193, 7)
     private val MUTED = Color.rgb(138, 150, 171)
     private val SOFT = Color.rgb(159, 176, 200)
@@ -120,7 +119,7 @@ object LauncherRenderer {
         return floatArrayOf((x - d.left) / d.width(), (y - d.top) / d.height())
     }
 
-    // ---------- vẽ ----------
+    // ---------- bố cục tự động ngang / dọc ----------
 
     fun render(c: Canvas, cw: Int, ch: Int, st: UiState) {
         c.drawColor(BG)
@@ -129,18 +128,41 @@ object LauncherRenderer {
         val a = RectF(pad, pad, cw - pad, ch - pad)
         lastMapDst = null
 
-        val avail = a.width() - 2 * g
-        val iconW = avail * 0.0948f
-        val mainW = avail * 0.5463f
-        val icons = RectF(a.left, a.top, a.left + iconW, a.bottom)
-        val main = RectF(icons.right + g, a.top, icons.right + g + mainW, a.bottom)
-        val rx = main.right + g
-        val availH = a.height() - 2 * g
-        val calH = availH * 0.20f
-        val qrH = availH * 0.55f
-        val cal = RectF(rx, a.top, a.right, a.top + calH)
-        val qr = RectF(rx, cal.bottom + g, a.right, cal.bottom + g + qrH)
-        val signs = RectF(rx, qr.bottom + g, a.right, a.bottom)
+        val icons: RectF
+        val main: RectF
+        val cal: RectF
+        val qr: RectF
+        val signs: RectF
+
+        if (a.width() >= a.height() * 1.3f) {
+            // Màn hình ngang: icon | bản đồ | (lịch trên, QR + biển báo dưới)
+            val avail = a.width() - 2 * g
+            val iconW = avail * 0.075f
+            val mapW = avail * 0.44f
+            icons = RectF(a.left, a.top, a.left + iconW, a.bottom)
+            main = RectF(icons.right + g, a.top, icons.right + g + mapW, a.bottom)
+            val rx = main.right + g
+            val calH = a.height() * 0.38f
+            cal = RectF(rx, a.top, a.right, a.top + calH)
+            val lowTop = cal.bottom + g
+            val qrW = (a.right - rx - g) * 0.6f
+            qr = RectF(rx, lowTop, rx + qrW, a.bottom)
+            signs = RectF(qr.right + g, lowTop, a.right, a.bottom)
+        } else {
+            // Màn hình dọc hoặc gần vuông
+            val avail = a.width() - 2 * g
+            val iconW = avail * 0.0948f
+            val mainW = avail * 0.5463f
+            icons = RectF(a.left, a.top, a.left + iconW, a.bottom)
+            main = RectF(icons.right + g, a.top, icons.right + g + mainW, a.bottom)
+            val rx = main.right + g
+            val availH = a.height() - 2 * g
+            val calH = availH * 0.20f
+            val qrH = availH * 0.55f
+            cal = RectF(rx, a.top, a.right, a.top + calH)
+            qr = RectF(rx, cal.bottom + g, a.right, cal.bottom + g + qrH)
+            signs = RectF(rx, qr.bottom + g, a.right, a.bottom)
+        }
         lastIcons = icons
         lastMain = main
 
@@ -197,7 +219,7 @@ object LauncherRenderer {
     // ---------- thẻ bản đồ ----------
 
     private fun drawMain(c: Canvas, m: RectF, st: UiState) {
-        val k = minOf(m.width() / 484f, m.height() / 820f)
+        val k = minOf(m.width() / 484f, m.height() / 560f)
         val rad = 28f * k
         fill.color = CARD
         c.drawRoundRect(m, rad, rad, fill)
@@ -215,7 +237,7 @@ object LauncherRenderer {
             lastMapDst = m
         } else {
             textMid(c, "Bản đồ", m.centerX(), m.centerY() - 14f * k, 44f * k, MUTED, true)
-            textMid(c, st.mapsStatus, m.centerX(), m.centerY() + 34f * k, 16f * k, ACCENT, false, m.width() * 0.85f)
+            textMid(c, st.mapsStatus, m.centerX(), m.centerY() + 34f * k, maxOf(12f, 16f * k), ACCENT, false, m.width() * 0.85f)
         }
 
         drawStreet(c, m, k, st.streetName)
@@ -228,14 +250,15 @@ object LauncherRenderer {
 
     private fun drawStreet(c: Canvas, m: RectF, k: Float, name: String) {
         if (name.isEmpty()) return
+        val size = maxOf(14f, 26f * k)
         val cy = m.bottom - 101f * k
         val maxW = m.width() * 0.84f
         tp.typeface = Typeface.DEFAULT_BOLD
-        tp.textSize = 26f * k
+        tp.textSize = size
         val w = minOf(tp.measureText(name), maxW)
-        val r = RectF(m.centerX() - w / 2f - 18f * k, cy - 21f * k, m.centerX() + w / 2f + 18f * k, cy + 21f * k)
+        val r = RectF(m.centerX() - w / 2f - 18f * k, cy - size * 0.8f, m.centerX() + w / 2f + 18f * k, cy + size * 0.8f)
         bubble(c, r, STREET)
-        textMid(c, name, m.centerX(), cy, 26f * k, Color.WHITE, true, maxW)
+        textMid(c, name, m.centerX(), cy, size, Color.WHITE, true, maxW)
     }
 
     private fun drawBubbles(c: Canvas, m: RectF, k: Float, st: UiState) {
@@ -245,7 +268,7 @@ object LauncherRenderer {
         val padX = 18f * k
 
         val tSize = 54f * k
-        val sSize = 22f * k
+        val sSize = maxOf(12f, 22f * k)
         tp.typeface = Typeface.DEFAULT_BOLD
         tp.textSize = tSize
         val w1 = tp.measureText(hhmm)
@@ -258,16 +281,17 @@ object LauncherRenderer {
         text(c, sec, tb.left + padX + w1 + 8f * k, ty, sSize, ACCENT, true)
 
         val label = if ((st.speedKmh ?: 0) > 3) "Đang chạy" else "Đang dừng"
+        val lSize = maxOf(11f, 16f * k)
         tp.typeface = Typeface.DEFAULT_BOLD
-        tp.textSize = 16f * k
+        tp.textSize = lSize
         val cw = tp.measureText(label) + 32f * k
         val chip = RectF(m.right - 16f * k - cw, tb.centerY() - 18f * k, m.right - 16f * k, tb.centerY() + 18f * k)
         bubble(c, chip)
-        textMid(c, label, chip.centerX(), chip.centerY(), 16f * k, SOFT, true)
+        textMid(c, label, chip.centerX(), chip.centerY(), lSize, SOFT, true)
 
         val spd = (st.speedKmh ?: 0).toString()
         val nSize = 60f * k
-        val uSize = 18f * k
+        val uSize = maxOf(11f, 18f * k)
         tp.typeface = Typeface.DEFAULT_BOLD
         tp.textSize = nSize
         val w3 = tp.measureText(spd)
@@ -292,14 +316,16 @@ object LauncherRenderer {
             "Pin điện thoại" to (if (st.batteryPct >= 0) "${st.batteryPct}%" else "—"),
             "Android Auto" to "Đã kết nối"
         )
+        val s1 = maxOf(11f, 12f * k)
+        val s2 = maxOf(13f, 16f * k)
         for (i in 0 until 3) {
             val x = left + i * (w + gap)
             val rc = RectF(x, bottom - h, x + w, bottom)
             fill.color = Color.argb(224, 18, 26, 39)
             c.drawRoundRect(rc, 14f * k, 14f * k, fill)
             c.drawRoundRect(rc, 14f * k, 14f * k, edge)
-            text(c, items[i].first, rc.left + 10f * k, rc.top + 22f * k, 12f * k, MUTED, false, Paint.Align.LEFT, w - 18f * k)
-            text(c, items[i].second, rc.left + 10f * k, rc.top + 46f * k, 16f * k, Color.WHITE, true, Paint.Align.LEFT, w - 18f * k)
+            text(c, items[i].first, rc.left + 10f * k, rc.top + 22f * k, s1, MUTED, false, Paint.Align.LEFT, w - 18f * k)
+            text(c, items[i].second, rc.left + 10f * k, rc.top + 46f * k, s2, Color.WHITE, true, Paint.Align.LEFT, w - 18f * k)
         }
     }
 
@@ -332,7 +358,7 @@ object LauncherRenderer {
     }
 
     private fun drawCalendar(c: Canvas, r: RectF, st: UiState) {
-        val k = r.width() / 318f
+        val k = minOf(r.width() / 318f, r.height() / 152f)
         card(c, r, 24f * k)
         val cal = Calendar.getInstance().apply { timeInMillis = st.nowMs }
         val dd = cal.get(Calendar.DAY_OF_MONTH)
@@ -361,9 +387,9 @@ object LauncherRenderer {
         val dw = tp.measureText(dayStr)
         val tx = dx + dw + 14f * k
         val maxW = r.right - tx - 12f * k
-        text(c, DAYS[dow - 1], tx, y0 + 24f * k, 22f * k, dayColor, true, Paint.Align.LEFT, maxW)
-        text(c, "Tháng $mm, $yy", tx, y0 + 46f * k, 16f * k, Color.WHITE, false, Paint.Align.LEFT, maxW)
-        text(c, lunarText, tx, y0 + 68f * k, 17f * k, if (lunarRed) RED else ACCENT, true, Paint.Align.LEFT, maxW)
+        text(c, DAYS[dow - 1], tx, y0 + 24f * k, maxOf(13f, 22f * k), dayColor, true, Paint.Align.LEFT, maxW)
+        text(c, "Tháng $mm, $yy", tx, y0 + 46f * k, maxOf(12f, 16f * k), Color.WHITE, false, Paint.Align.LEFT, maxW)
+        text(c, lunarText, tx, y0 + 68f * k, maxOf(12f, 17f * k), if (lunarRed) RED else ACCENT, true, Paint.Align.LEFT, maxW)
 
         if (hasEv) {
             linePaint.color = LINE
@@ -371,7 +397,7 @@ object LauncherRenderer {
             c.drawLine(r.left + 16f * k, r.top + 92f * k, r.right - 16f * k, r.top + 92f * k, linePaint)
             var y = r.top + 116f * k
             for (ev in st.events.take(2)) {
-                drawEventLine(c, ev, r.left + 16f * k, y, r.width() - 32f * k, 14f * k)
+                drawEventLine(c, ev, r.left + 16f * k, y, r.width() - 32f * k, maxOf(12f, 14f * k))
                 y += 24f * k
             }
         }
@@ -429,20 +455,21 @@ object LauncherRenderer {
     }
 
     private fun drawQr(c: Canvas, r: RectF, file: File?) {
-        val k = r.width() / 318f
+        val k = minOf(r.width() / 318f, 1.2f)
         card(c, r, 24f * k)
-        val panel = RectF(r.left + 10f * k, r.top + 10f * k, r.right - 10f * k, r.bottom - 10f * k)
+        val margin = maxOf(6f, 10f * k)
+        val panel = RectF(r.left + margin, r.top + margin, r.right - margin, r.bottom - margin)
         fill.color = Color.WHITE
         c.drawRoundRect(panel, 18f * k, 18f * k, fill)
 
         val bmp = loadQr(file)
         if (bmp == null) {
             val gray = Color.rgb(90, 90, 90)
-            textMid(c, "Chưa có ảnh QR", panel.centerX(), panel.centerY() - 10f * k, 20f * k, gray, true, panel.width() * 0.85f)
-            textMid(c, "Chọn ảnh trong app điện thoại", panel.centerX(), panel.centerY() + 18f * k, 14f * k, gray, false, panel.width() * 0.85f)
+            textMid(c, "Chưa có ảnh QR", panel.centerX(), panel.centerY() - 10f * k, maxOf(13f, 20f * k), gray, true, panel.width() * 0.85f)
+            textMid(c, "Chọn ảnh trong app điện thoại", panel.centerX(), panel.centerY() + 18f * k, maxOf(11f, 14f * k), gray, false, panel.width() * 0.85f)
             return
         }
-        val inset = 8f * k
+        val inset = maxOf(4f, 8f * k)
         val iw = panel.width() - 2 * inset
         val ih = panel.height() - 2 * inset
         val scale = minOf(iw / bmp.width, ih / bmp.height)
@@ -459,23 +486,25 @@ object LauncherRenderer {
     // ---------- khung chờ cho biển báo ----------
 
     private fun drawSigns(c: Canvas, r: RectF) {
-        val k = r.width() / 318f
+        val k = minOf(r.width() / 318f, r.height() / 223f, 1.2f)
         card(c, r, 24f * k)
-        text(c, "Biển báo & giao thông", r.left + 16f * k, r.top + 34f * k, 17f * k, Color.WHITE, true, Paint.Align.LEFT, r.width() - 32f * k)
-        text(c, "Sẽ có ở bản cập nhật sau", r.left + 16f * k, r.top + 56f * k, 13f * k, MUTED)
-        val cy = r.top + r.height() * 0.68f
-        linePaint.strokeWidth = 6f * k
+        val pad = maxOf(8f, 16f * k)
+        text(c, "Biển báo & giao thông", r.left + pad, r.top + pad + maxOf(12f, 17f * k), maxOf(12f, 17f * k), Color.WHITE, true, Paint.Align.LEFT, r.width() - 2 * pad)
+        text(c, "Sẽ có ở bản cập nhật sau", r.left + pad, r.top + pad + maxOf(12f, 17f * k) + maxOf(14f, 20f * k), maxOf(11f, 13f * k), MUTED, false, Paint.Align.LEFT, r.width() - 2 * pad)
+        val cy = r.top + r.height() * 0.70f
+        val rad = maxOf(12f, 26f * k)
+        linePaint.strokeWidth = maxOf(3f, 6f * k)
         linePaint.color = Color.argb(70, 214, 69, 65)
         for (i in 0 until 3) {
             val cx = r.left + r.width() * (2 * i + 1) / 6f
-            c.drawCircle(cx, cy, 26f * k, linePaint)
+            c.drawCircle(cx, cy, rad, linePaint)
         }
     }
 
     // ---------- cột icon ----------
 
     private fun drawIcons(c: Canvas, r: RectF, selected: Int) {
-        val k = r.width() / 84f
+        val k = minOf(r.width() / 84f, r.height() / (ICON_COUNT * 66f))
         val rad = r.width() / 2f
         fill.color = PILL
         c.drawRoundRect(r, rad, rad, fill)
