@@ -41,6 +41,7 @@ import org.maplibre.android.style.layers.BackgroundLayer
 import org.maplibre.android.style.layers.FillExtrusionLayer
 import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.VectorSource
@@ -67,6 +68,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             "road", "highway", "street", "motorway", "trunk", "primary", "secondary",
             "tertiary", "minor", "service", "bridge", "tunnel", "link", "path", "pedestrian", "track"
         )
+        private val LABEL_KEYS = arrayOf("name", "road", "highway", "street", "motorway")
         private val SKIP_CLASS = setOf("rail", "transit", "ferry", "aerialway", "path", "pedestrian", "track", "pier")
     }
 
@@ -75,6 +77,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     var frameW = 0
     var frameH = 0
     var streetName = ""
+    var satUsed = 0
     var onFrame: (() -> Unit)? = null
 
     private class SnapPoint(val lat: Double, val lon: Double, val heading: Double)
@@ -84,7 +87,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var pres: MapPresentation? = null
     private var map: MapLibreMap? = null
     private var arrow: ArrowView? = null
-    private var arrowSize = 48
+    private var arrowNominal = 48
+    private var arrowView = 80
     private var blocked = false
 
     // camera / người dùng
@@ -98,6 +102,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var tiltBtn: TextView? = null
 
     // vị trí
+    private val gps = GpsFilter()
     private var hasFix = false
     private var snapped = false
     private var moving = false
@@ -122,6 +127,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var segCenterLat = 0.0
     private var segCenterLon = 0.0
     private var segMs = 0L
+    private var stickyA = Double.NaN
+    private var stickyB = Double.NaN
 
     // ngày / đêm, tên đường
     private var night = false
@@ -140,6 +147,12 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     }
 
     fun running(): Boolean = vd != null
+
+    fun setGnss(used: Int, cn0: Double) {
+        satUsed = used
+        gps.used = used
+        gps.cn0 = cn0
+    }
 
     // ---------- vòng đời ----------
 
@@ -263,7 +276,6 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         lastTouchMs = SystemClock.elapsedRealtime()
     }
 
-    // Dịch tâm bản đồ theo pixel trên màn hình (đúng với mọi góc xoay, nghiêng, zoom)
     private fun panByScreen(dx: Float, dy: Float, animate: Boolean) {
         val m = map ?: return
         val pos = m.cameraPosition
@@ -280,7 +292,6 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     fun scrollBy(dx: Float, dy: Float) {
         if (map == null) return
         val now = SystemClock.elapsedRealtime()
-        // đang thu phóng bằng hai ngón: bỏ qua sự kiện kéo kèm theo
         if (now - lastScaleMs < 350L) return
         if (abs(dx) > 400f || abs(dy) > 400f) return
         leaveFollow()
@@ -295,7 +306,6 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         panByScreen(-vx * 0.12f, -vy * 0.12f, true)
     }
 
-    // Thu phóng hai ngón: luôn quanh tâm bản đồ (chính là xe), có giới hạn
     fun pinch(scale: Float, nx: Float, ny: Float) {
         val m = map ?: return
         if (scale.isNaN() || scale < 0.2f || scale > 5f) return
@@ -317,7 +327,6 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         }
     }
 
-    // Về vị trí xe: đặt lại toàn bộ trạng thái
     private fun recenter() {
         following = true
         userZoom = null
@@ -375,7 +384,6 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
 
     fun onLocation(loc: Location) {
         val now = SystemClock.elapsedRealtime()
-        val sp = if (loc.hasSpeed() && !loc.speed.isNaN()) loc.speed else 0f
         if (hasFix) {
             if (loc.hasAccuracy() && loc.accuracy > 60f) return
             val d = dist(lastRawLat, lastRawLon, loc.latitude, loc.longitude)
@@ -384,33 +392,36 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         }
         lastRawLat = loc.latitude
         lastRawLon = loc.longitude
-        moving = if (moving) sp > 0.9f else sp > 2.0f
+
+        val fx = gps.update(loc, now)
+        val sp = fx.speed.toFloat()
+        moving = if (fx.stationary) false else if (moving) sp > 0.9f else sp > 2.0f
         speedMs = if (moving) sp else 0f
 
         var hd = Double.NaN
         if (!hasFix) {
-            anchorLat = loc.latitude
-            anchorLon = loc.longitude
+            anchorLat = fx.lat
+            anchorLon = fx.lon
         }
         if (moving) {
-            if (loc.hasBearing()) hd = loc.bearing.toDouble()
-            if (dist(anchorLat, anchorLon, loc.latitude, loc.longitude) >= 8.0) {
-                val b = bearingTo(anchorLat, anchorLon, loc.latitude, loc.longitude)
+            hd = fx.course
+            if (dist(anchorLat, anchorLon, fx.lat, fx.lon) >= 8.0) {
+                val b = bearingTo(anchorLat, anchorLon, fx.lat, fx.lon)
                 if (hd.isNaN() || angDiff(b, hd) > 50.0) hd = b
-                anchorLat = loc.latitude
-                anchorLon = loc.longitude
+                anchorLat = fx.lat
+                anchorLon = fx.lon
             }
         } else {
-            anchorLat = loc.latitude
-            anchorLon = loc.longitude
+            anchorLat = fx.lat
+            anchorLon = fx.lon
         }
 
         if (!hasFix) {
             hasFix = true
-            val s = snap(loc.latitude, loc.longitude, Double.NaN)
+            val s = snap(fx.lat, fx.lon, Double.NaN)
             snapped = s != null
-            tLat = s?.lat ?: loc.latitude
-            tLon = s?.lon ?: loc.longitude
+            tLat = s?.lat ?: fx.lat
+            tLon = s?.lon ?: fx.lon
             tHeading = 0.0
             dLat = tLat
             dLon = tLon
@@ -420,10 +431,10 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         }
         fixMs = now
         if (moving) {
-            val s = snap(loc.latitude, loc.longitude, hd)
+            val s = snap(fx.lat, fx.lon, hd)
             if (s != null) snapped = true
-            tLat = s?.lat ?: loc.latitude
-            tLon = s?.lon ?: loc.longitude
+            tLat = s?.lat ?: fx.lat
+            tLon = s?.lon ?: fx.lon
             val cand = when {
                 s != null && !s.heading.isNaN() -> s.heading
                 !hd.isNaN() -> hd
@@ -489,6 +500,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         var by = 0.0
         var bBearing = 0.0
         var bOneway = 0.0
+        var bA = Double.NaN
+        var bB = Double.NaN
         var found = false
         for (s in segs) {
             val ax = (s[1] - lon) * kx
@@ -508,17 +521,22 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             val a0 = angDiff(segB, ref)
             val a = min(a0, 180.0 - a0)
             if (!hd.isNaN() && a > 45.0) continue
-            val score = d + (if (hd.isNaN()) 0.0 else 0.25 * a)
+            var score = d + (if (hd.isNaN()) 0.0 else 0.25 * a)
+            if (s[0] == stickyA && s[1] == stickyB) score -= 5.0
             if (score < bestScore) {
                 bestScore = score
                 bx = px
                 by = py
                 bBearing = segB
                 bOneway = s[4]
+                bA = s[0]
+                bB = s[1]
                 found = true
             }
         }
         if (!found) return null
+        stickyA = bA
+        stickyB = bB
         var tb = bBearing
         if (angDiff(tb, ref) > 90.0) tb += 180.0
         tb = ((tb % 360.0) + 360.0) % 360.0
@@ -547,7 +565,6 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         lastFrameMs = now
         if (!hasFix) return
 
-        // chống trạng thái hỏng
         if (dLat.isNaN() || dLon.isNaN()) {
             dLat = tLat
             dLon = tLon
@@ -556,11 +573,14 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         if (smKmh.isNaN()) smKmh = 0.0
         if (dZoom.isNaN() || dZoom < 3.0 || dZoom > 21.0) dZoom = 18.0
 
-        val age = ((now - fixMs) / 1000.0).coerceAtMost(1.3)
+        // đi tiếp theo vận tốc cuối khi mất GPS (hầm, cầu), giảm dần sau 2 giây
+        val ageRaw = (now - fixMs) / 1000.0
+        val age = ageRaw.coerceAtMost(6.0)
+        val decay = if (ageRaw > 2.0) (1.0 - (ageRaw - 2.0) / 8.0).coerceIn(0.4, 1.0) else 1.0
         var pLat = tLat
         var pLon = tLon
         if (moving && speedMs > 0f) {
-            val d = speedMs * age
+            val d = speedMs * age * decay
             val br = Math.toRadians(tHeading)
             pLat += cos(br) * d / 111320.0
             pLon += sin(br) * d / (111320.0 * cos(Math.toRadians(tLat)))
@@ -599,14 +619,13 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         updateArrow(m)
     }
 
-    // Mũi tên là lớp vẽ riêng đặt theo vị trí xe trên màn hình, luôn dính với camera
     private fun updateArrow(m: MapLibreMap) {
         val av = arrow ?: return
         val pt = m.projection.toScreenLocation(LatLng(dLat, dLon))
         av.visibility = View.VISIBLE
-        av.translationX = pt.x - arrowSize / 2f
-        av.translationY = pt.y - arrowSize / 2f
-        av.rotation = (dHeading - m.cameraPosition.bearing).toFloat()
+        av.translationX = pt.x - arrowView / 2f
+        av.translationY = pt.y - arrowView / 2f
+        av.setPose((dHeading - m.cameraPosition.bearing).toFloat(), tilt.toFloat())
     }
 
     // ---------- ngày / đêm, tên đường ----------
@@ -715,7 +734,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         m.uiSettings.isLogoEnabled = false
         m.uiSettings.isAttributionEnabled = false
         m.uiSettings.setAllGesturesEnabled(false)
-        m.setPadding(0, (frameH * 0.40f).toInt(), 0, 0)
+        m.setPadding(0, (frameH * 0.46f).toInt(), 0, 0)
         m.moveCamera(
             CameraUpdateFactory.newCameraPosition(
                 CameraPosition.Builder()
@@ -735,6 +754,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         val m = map ?: return
         m.setStyle(Style.Builder().fromUri(STYLE)) { style ->
             if (night) themeNight(style)
+            tuneLabels(style)
             status = "Bản đồ đã tải"
         }
     }
@@ -751,6 +771,36 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private fun isRoad(id: String): Boolean {
         for (k in ROAD_KEYS) if (id.contains(k)) return true
         return false
+    }
+
+    private fun isLabel(id: String): Boolean {
+        for (k in LABEL_KEYS) if (id.contains(k)) return true
+        return false
+    }
+
+    // Nhãn đứng dậy hướng về người nhìn (nổi 3D), chữ to hơn để đọc đường phía trước
+    private fun tuneLabels(style: Style) {
+        for (layer in style.layers) {
+            if (layer !is SymbolLayer) continue
+            val id = layer.id.lowercase()
+            try {
+                layer.setProperties(PropertyFactory.textPitchAlignment(Property.TEXT_PITCH_ALIGNMENT_VIEWPORT))
+                if (isLabel(id)) {
+                    layer.setProperties(
+                        PropertyFactory.textRotationAlignment(Property.TEXT_ROTATION_ALIGNMENT_MAP),
+                        PropertyFactory.textSize(
+                            Expression.interpolate(
+                                Expression.linear(), Expression.zoom(),
+                                Expression.stop(14, 13f), Expression.stop(16, 18f),
+                                Expression.stop(18, 24f), Expression.stop(20, 28f)
+                            )
+                        ),
+                        PropertyFactory.textHaloWidth(2.2f)
+                    )
+                }
+            } catch (t: Throwable) {
+            }
+        }
     }
 
     private fun themeNight(style: Style) {
@@ -822,12 +872,18 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         }
     }
 
-    // ---------- mũi tên kiểu Apple Maps ----------
+    // ---------- mũi tên nằm trên mặt đường, khớp góc nghiêng của bản đồ ----------
 
-    private class ArrowView(c: Context) : View(c) {
+    private class ArrowView(c: Context, private val nominal: Int) : View(c) {
+        private var rel = 0f
+        private var tiltDeg = 0f
         private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
-            color = Color.argb(34, 0, 0, 0)
+            color = Color.argb(36, 0, 0, 0)
+        }
+        private val sidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.rgb(8, 52, 140)
         }
         private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL_AND_STROKE
@@ -845,12 +901,20 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         }
         private val path = Path()
 
-        private fun poly(cx: Float, cy: Float, s: Float, scale: Float, dy: Float, vararg p: Float): Path {
+        fun setPose(r: Float, t: Float) {
+            if (abs(r - rel) > 0.2f || abs(t - tiltDeg) > 0.1f) {
+                rel = r
+                tiltDeg = t
+                invalidate()
+            }
+        }
+
+        private fun shape(s: Float, scale: Float, vararg p: Float): Path {
             path.reset()
             var i = 0
             while (i < p.size) {
-                val x = cx + p[i] * s * scale
-                val y = cy + p[i + 1] * s * scale + dy
+                val x = p[i] * s * scale
+                val y = p[i + 1] * s * scale
                 if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
                 i += 2
             }
@@ -858,23 +922,44 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             return path
         }
 
+        // vẽ một lớp: tịnh tiến, nén theo góc nghiêng, xoay trong mặt phẳng đường, kéo dài theo trục mũi tên
+        private fun layer(c: Canvas, cx: Float, cy: Float, cosT: Float, ky: Float, p: Path, paint: Paint) {
+            c.save()
+            c.translate(cx, cy)
+            c.scale(1f, cosT)
+            c.rotate(rel)
+            c.scale(1f, ky)
+            c.drawPath(p, paint)
+            c.restore()
+        }
+
         override fun onDraw(canvas: Canvas) {
-            val s = min(width, height) * 0.40f
+            val s = nominal * 0.40f
             val cx = width / 2f
             val cy = height / 2f
-            // bóng mờ phía dưới (nhiều lớp xếp chồng)
+            val tr = Math.toRadians(tiltDeg.toDouble())
+            val cosT = max(0.35f, cos(tr).toFloat())
+            val sinT = sin(tr).toFloat()
+            val ky = 1f + 0.6f * sinT
+            val h = s * 0.35f * sinT
+
+            // bóng trên mặt đường
             for (i in 1..3) {
-                canvas.drawPath(
-                    poly(cx, cy, s, 1f + 0.05f * i, s * 0.07f * i, 0f, -1f, 0.7f, 0.86f, 0f, 0.42f, -0.7f, 0.86f),
-                    shadowPaint
-                )
+                val p = shape(s, 1f + 0.07f * i, 0f, -1f, 0.7f, 0.86f, 0f, 0.42f, -0.7f, 0.86f)
+                layer(canvas, cx, cy, cosT, ky, p, shadowPaint)
             }
-            // viền trắng bo tròn
+            // thành bên (độ dày nổi khối)
+            if (h > 0.5f) {
+                for (i in 1..4) {
+                    val p = shape(s, 1f, 0f, -1f, 0.7f, 0.86f, 0f, 0.42f, -0.7f, 0.86f)
+                    layer(canvas, cx, cy - h * i / 4f, cosT, ky, p, sidePaint)
+                }
+            }
+            val top = cy - h
             outline.strokeWidth = s * 0.26f
-            canvas.drawPath(poly(cx, cy, s, 1f, 0f, 0f, -1f, 0.7f, 0.86f, 0f, 0.42f, -0.7f, 0.86f), outline)
-            // hai mặt sáng và tối
-            canvas.drawPath(poly(cx, cy, s, 1f, 0f, 0f, -1f, 0f, 0.42f, -0.7f, 0.86f), leftPaint)
-            canvas.drawPath(poly(cx, cy, s, 1f, 0f, 0f, -1f, 0.7f, 0.86f, 0f, 0.42f), rightPaint)
+            layer(canvas, cx, top, cosT, ky, shape(s, 1f, 0f, -1f, 0.7f, 0.86f, 0f, 0.42f, -0.7f, 0.86f), outline)
+            layer(canvas, cx, top, cosT, ky, shape(s, 1f, 0f, -1f, 0f, 0.42f, -0.7f, 0.86f), leftPaint)
+            layer(canvas, cx, top, cosT, ky, shape(s, 1f, 0f, -1f, 0.7f, 0.86f, 0f, 0.42f), rightPaint)
         }
     }
 
@@ -896,10 +981,11 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     }
 
     private fun buildOverlay(c: Context, root: FrameLayout) {
-        arrowSize = (frameW * 0.115f).toInt().coerceIn(40, 72)
-        val av = ArrowView(c)
+        arrowNominal = (frameW * 0.115f).toInt().coerceIn(40, 72)
+        arrowView = (arrowNominal * 1.8f).toInt()
+        val av = ArrowView(c, arrowNominal)
         av.visibility = View.INVISIBLE
-        root.addView(av, FrameLayout.LayoutParams(arrowSize, arrowSize))
+        root.addView(av, FrameLayout.LayoutParams(arrowView, arrowView))
         arrow = av
 
         val size = (frameW * 0.15f).toInt().coerceIn(52, 84)
@@ -939,7 +1025,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.START or Gravity.BOTTOM
         )
-        alp.bottomMargin = (frameH * 0.17f).toInt()
+        alp.bottomMargin = (frameH * 0.02f).toInt()
         root.addView(attr, alp)
     }
 
