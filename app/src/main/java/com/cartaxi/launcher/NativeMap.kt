@@ -3,7 +3,10 @@ package com.cartaxi.launcher
 import android.app.Presentation
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.PointF
 import android.graphics.Typeface
@@ -20,6 +23,7 @@ import android.util.TypedValue
 import android.view.Display
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -39,14 +43,10 @@ import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.layers.SymbolLayer
-import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.android.style.sources.VectorSource
-import org.maplibre.geojson.Feature
-import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.MultiLineString
 import org.maplibre.geojson.Point
-import org.maplibre.geojson.Polygon
 import java.util.Calendar
 import kotlin.math.abs
 import kotlin.math.asin
@@ -56,21 +56,13 @@ import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
-import android.graphics.Point as APoint
 
 class NativeMap(private val appCtx: Context, private val main: Handler) {
     companion object {
         const val STYLE = "https://tiles.openfreemap.org/styles/liberty"
         const val DPI = 260
-        private const val ARROW_PX = 46.0
-        // x theo bề ngang, y theo chiều dài (đơn vị tương đối)
-        private val SHAPE = arrayOf(
-            doubleArrayOf(0.0, 0.55), doubleArrayOf(0.5, -0.45),
-            doubleArrayOf(0.0, -0.15), doubleArrayOf(-0.5, -0.45)
-        )
         private val ROAD_KEYS = arrayOf(
             "road", "highway", "street", "motorway", "trunk", "primary", "secondary",
             "tertiary", "minor", "service", "bridge", "tunnel", "link", "path", "pedestrian", "track"
@@ -91,12 +83,15 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var reader: ImageReader? = null
     private var pres: MapPresentation? = null
     private var map: MapLibreMap? = null
+    private var arrow: ArrowView? = null
+    private var arrowSize = 48
     private var blocked = false
 
     // camera / người dùng
     private var tilt = 60.0
     private var following = true
     private var lastTouchMs = 0L
+    private var lastScaleMs = 0L
     private var userZoom: Double? = null
     private var userZoomMs = 0L
     private var manualZoom = 17.0
@@ -201,6 +196,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         }
         pres = null
         map = null
+        arrow = null
         try {
             vd?.release()
         } catch (t: Throwable) {
@@ -262,7 +258,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private fun leaveFollow() {
         if (following) {
             following = false
-            manualZoom = map?.cameraPosition?.zoom ?: dZoom
+            manualZoom = (map?.cameraPosition?.zoom ?: dZoom).coerceIn(3.0, 20.0)
         }
         lastTouchMs = SystemClock.elapsedRealtime()
     }
@@ -283,27 +279,61 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
 
     fun scrollBy(dx: Float, dy: Float) {
         if (map == null) return
+        val now = SystemClock.elapsedRealtime()
+        // đang thu phóng bằng hai ngón: bỏ qua sự kiện kéo kèm theo
+        if (now - lastScaleMs < 350L) return
+        if (abs(dx) > 400f || abs(dy) > 400f) return
         leaveFollow()
         panByScreen(dx, dy, false)
     }
 
     fun fling(vx: Float, vy: Float) {
         if (map == null) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastScaleMs < 600L) return
         leaveFollow()
         panByScreen(-vx * 0.12f, -vy * 0.12f, true)
     }
 
+    // Thu phóng hai ngón: luôn quanh tâm bản đồ (chính là xe), có giới hạn
     fun pinch(scale: Float, nx: Float, ny: Float) {
         val m = map ?: return
-        leaveFollow()
-        val dz = ln(scale.toDouble()) / ln(2.0)
-        m.moveCamera(CameraUpdateFactory.zoomBy(dz, APoint((nx * frameW).toInt(), (ny * frameH).toInt())))
-        manualZoom = m.cameraPosition.zoom
+        if (scale.isNaN() || scale < 0.2f || scale > 5f) return
+        val now = SystemClock.elapsedRealtime()
+        lastScaleMs = now
+        val dz = (ln(scale.toDouble()) / ln(2.0)).coerceIn(-0.25, 0.25)
+        if (following) {
+            val base = userZoom ?: dZoom
+            val z = (base + dz).coerceIn(3.0, 20.0)
+            userZoom = z
+            userZoomMs = now
+            dZoom = z
+        } else {
+            val pos = m.cameraPosition
+            val z = (pos.zoom + dz).coerceIn(3.0, 20.0)
+            manualZoom = z
+            lastTouchMs = now
+            m.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder(pos).zoom(z).build()))
+        }
     }
 
+    // Về vị trí xe: đặt lại toàn bộ trạng thái
     private fun recenter() {
         following = true
         userZoom = null
+        if (smKmh.isNaN()) smKmh = 0.0
+        dZoom = autoZoom(smKmh)
+        val m = map ?: return
+        m.moveCamera(
+            CameraUpdateFactory.newCameraPosition(
+                CameraPosition.Builder()
+                    .target(LatLng(dLat, dLon))
+                    .zoom(dZoom)
+                    .tilt(tilt)
+                    .bearing(dHeading)
+                    .build()
+            )
+        )
     }
 
     private fun toggleTilt() {
@@ -319,9 +349,11 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             userZoomMs = now
         } else {
             val m = map ?: return
-            m.animateCamera(CameraUpdateFactory.zoomBy(delta), 250)
-            manualZoom = (manualZoom + delta).coerceIn(3.0, 20.0)
+            val pos = m.cameraPosition
+            val z = (pos.zoom + delta).coerceIn(3.0, 20.0)
+            manualZoom = z
             lastTouchMs = now
+            m.animateCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder(pos).zoom(z).build()), 250)
         }
     }
 
@@ -343,7 +375,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
 
     fun onLocation(loc: Location) {
         val now = SystemClock.elapsedRealtime()
-        val sp = if (loc.hasSpeed()) loc.speed else 0f
+        val sp = if (loc.hasSpeed() && !loc.speed.isNaN()) loc.speed else 0f
         if (hasFix) {
             if (loc.hasAccuracy() && loc.accuracy > 60f) return
             val d = dist(lastRawLat, lastRawLon, loc.latitude, loc.longitude)
@@ -355,7 +387,6 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         moving = if (moving) sp > 0.9f else sp > 2.0f
         speedMs = if (moving) sp else 0f
 
-        // Hướng đi: ưu tiên hướng GPS, đối chiếu với quãng đường thực tế
         var hd = Double.NaN
         if (!hasFix) {
             anchorLat = loc.latitude
@@ -516,6 +547,15 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         lastFrameMs = now
         if (!hasFix) return
 
+        // chống trạng thái hỏng
+        if (dLat.isNaN() || dLon.isNaN()) {
+            dLat = tLat
+            dLon = tLon
+        }
+        if (dHeading.isNaN()) dHeading = if (tHeading.isNaN()) 0.0 else tHeading
+        if (smKmh.isNaN()) smKmh = 0.0
+        if (dZoom.isNaN() || dZoom < 3.0 || dZoom > 21.0) dZoom = 18.0
+
         val age = ((now - fixMs) / 1000.0).coerceAtMost(1.3)
         var pLat = tLat
         var pLon = tLon
@@ -549,8 +589,24 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                         .build()
                 )
             )
+        } else {
+            val cz = m.cameraPosition.zoom
+            if (cz.isNaN() || cz > 20.5 || cz < 2.5) {
+                val z = if (cz.isNaN()) 18.0 else cz.coerceIn(3.0, 20.0)
+                m.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder(m.cameraPosition).zoom(z).build()))
+            }
         }
-        updateCar(m)
+        updateArrow(m)
+    }
+
+    // Mũi tên là lớp vẽ riêng đặt theo vị trí xe trên màn hình, luôn dính với camera
+    private fun updateArrow(m: MapLibreMap) {
+        val av = arrow ?: return
+        val pt = m.projection.toScreenLocation(LatLng(dLat, dLon))
+        av.visibility = View.VISIBLE
+        av.translationX = pt.x - arrowSize / 2f
+        av.translationY = pt.y - arrowSize / 2f
+        av.rotation = (dHeading - m.cameraPosition.bearing).toFloat()
     }
 
     // ---------- ngày / đêm, tên đường ----------
@@ -679,7 +735,6 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         val m = map ?: return
         m.setStyle(Style.Builder().fromUri(STYLE)) { style ->
             if (night) themeNight(style)
-            addCar(style)
             status = "Bản đồ đã tải"
         }
     }
@@ -767,62 +822,60 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         }
     }
 
-    // ---------- mũi tên 3D (kích thước cố định trên màn hình) ----------
+    // ---------- mũi tên kiểu Apple Maps ----------
 
-    private fun ring(lat: Double, lon: Double, bearingDeg: Double, lenG: Double, widM: Double, scale: Double): Polygon {
-        val th = Math.toRadians(bearingDeg)
-        val cosT = cos(th)
-        val sinT = sin(th)
-        val kLon = 111320.0 * cos(Math.toRadians(lat))
-        val pts = ArrayList<Point>()
-        for (p in SHAPE) {
-            val x = p[0] * widM * scale
-            val y = p[1] * lenG * scale
-            val xr = x * cosT + y * sinT
-            val yr = -x * sinT + y * cosT
-            pts.add(Point.fromLngLat(lon + xr / kLon, lat + yr / 111320.0))
+    private class ArrowView(c: Context) : View(c) {
+        private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.argb(34, 0, 0, 0)
         }
-        pts.add(pts[0])
-        return Polygon.fromLngLats(listOf(pts))
-    }
+        private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL_AND_STROKE
+            strokeJoin = Paint.Join.ROUND
+            strokeCap = Paint.Cap.ROUND
+            color = Color.WHITE
+        }
+        private val leftPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.rgb(64, 168, 255)
+        }
+        private val rightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.rgb(10, 98, 226)
+        }
+        private val path = Path()
 
-    private fun part(poly: Polygon, base: Double, top: Double, color: String): Feature {
-        val f = Feature.fromGeometry(poly)
-        f.addNumberProperty("b", base)
-        f.addNumberProperty("h", top)
-        f.addStringProperty("c", color)
-        return f
-    }
+        private fun poly(cx: Float, cy: Float, s: Float, scale: Float, dy: Float, vararg p: Float): Path {
+            path.reset()
+            var i = 0
+            while (i < p.size) {
+                val x = cx + p[i] * s * scale
+                val y = cy + p[i + 1] * s * scale + dy
+                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                i += 2
+            }
+            path.close()
+            return path
+        }
 
-    private fun addCar(style: Style) {
-        style.addSource(GeoJsonSource("car-src"))
-        style.addLayer(
-            FillExtrusionLayer("car-3d", "car-src").withProperties(
-                PropertyFactory.fillExtrusionColor(Expression.toColor(Expression.get("c"))),
-                PropertyFactory.fillExtrusionHeight(Expression.get("h")),
-                PropertyFactory.fillExtrusionBase(Expression.get("b")),
-                PropertyFactory.fillExtrusionOpacity(1.0f)
-            )
-        )
-    }
-
-    private fun updateCar(m: MapLibreMap) {
-        val src = m.style?.getSourceAs<GeoJsonSource>("car-src") ?: return
-        val zoom = m.cameraPosition.zoom
-        val mpp = 78271.517 * cos(Math.toRadians(dLat)) / 2.0.pow(zoom) / (DPI / 160.0)
-        val lenM = ARROW_PX * mpp
-        val lenG = lenM / max(0.55, cos(Math.toRadians(tilt)))
-        val widM = 0.62 * lenM
-        val h1 = 6.0 * mpp
-        val h2 = 13.0 * mpp
-        src.setGeoJson(
-            FeatureCollection.fromFeatures(
-                listOf(
-                    part(ring(dLat, dLon, dHeading, lenG, widM, 1.16), 0.0, h1, "#000000"),
-                    part(ring(dLat, dLon, dHeading, lenG, widM, 1.0), h1, h2, "#ffffff")
+        override fun onDraw(canvas: Canvas) {
+            val s = min(width, height) * 0.40f
+            val cx = width / 2f
+            val cy = height / 2f
+            // bóng mờ phía dưới (nhiều lớp xếp chồng)
+            for (i in 1..3) {
+                canvas.drawPath(
+                    poly(cx, cy, s, 1f + 0.05f * i, s * 0.07f * i, 0f, -1f, 0.7f, 0.86f, 0f, 0.42f, -0.7f, 0.86f),
+                    shadowPaint
                 )
-            )
-        )
+            }
+            // viền trắng bo tròn
+            outline.strokeWidth = s * 0.26f
+            canvas.drawPath(poly(cx, cy, s, 1f, 0f, 0f, -1f, 0.7f, 0.86f, 0f, 0.42f, -0.7f, 0.86f), outline)
+            // hai mặt sáng và tối
+            canvas.drawPath(poly(cx, cy, s, 1f, 0f, 0f, -1f, 0f, 0.42f, -0.7f, 0.86f), leftPaint)
+            canvas.drawPath(poly(cx, cy, s, 1f, 0f, 0f, -1f, 0.7f, 0.86f, 0f, 0.42f), rightPaint)
+        }
     }
 
     // ---------- giao diện trên màn hình ảo ----------
@@ -843,6 +896,12 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     }
 
     private fun buildOverlay(c: Context, root: FrameLayout) {
+        arrowSize = (frameW * 0.115f).toInt().coerceIn(40, 72)
+        val av = ArrowView(c)
+        av.visibility = View.INVISIBLE
+        root.addView(av, FrameLayout.LayoutParams(arrowSize, arrowSize))
+        arrow = av
+
         val size = (frameW * 0.15f).toInt().coerceIn(52, 84)
         val gap = (size * 0.14f).toInt()
         val col = LinearLayout(c)
@@ -906,6 +965,6 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             mapView = mv
             mv.onCreate(null)
             mv.getMapAsync { m -> onMapReady(m) }
-			}
         }
     }
+}
