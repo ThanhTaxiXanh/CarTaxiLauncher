@@ -38,14 +38,18 @@ import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.BackgroundLayer
+import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.FillExtrusionLayer
 import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.layers.SymbolLayer
+import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.android.style.sources.VectorSource
 import org.maplibre.geojson.LineString
+import org.maplibre.geojson.Feature
+import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.MultiLineString
 import org.maplibre.geojson.Point
 import java.util.Calendar
@@ -79,6 +83,11 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     var streetName = ""
     var satUsed = 0
     var onFrame: (() -> Unit)? = null
+    var signsState: SignsState = SignsState.EMPTY
+
+    private val signs = RoadSigns(java.io.File(appCtx.filesDir, "signs_cache.json"))
+    private var signsKey = Int.MIN_VALUE
+    private val signsSrc = "ct-signs"
 
     private class SnapPoint(val lat: Double, val lon: Double, val heading: Double)
 
@@ -652,6 +661,79 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             lastStreetMs = nowMs
             refreshStreet(nowMs)
         }
+        updateSigns()
+    }
+
+    // ---------- biển báo & giới hạn tốc độ ----------
+
+    private fun signColor(type: String): String = when (type) {
+        "speed" -> "#d62626"
+        "camera" -> "#7b1fa2"
+        "stop" -> "#c62828"
+        "yield" -> "#ef6c00"
+        "signals" -> "#2e7d32"
+        "bump" -> "#ef8f00"
+        else -> "#1565c0"
+    }
+
+    private fun updateSigns() {
+        if (!hasFix) return
+        try {
+            signs.request(tLat, tLon)
+            signsState = signs.state(tLat, tLon, tHeading, moving)
+            val near = signs.nearby(tLat, tLon, 600.0, 60)
+            var key = near.size
+            for (s in near) key = key * 31 + (s.lat.hashCode() xor s.lon.hashCode())
+            if (key == signsKey) return
+            val st = map?.style ?: return
+            val src = st.getSourceAs<GeoJsonSource>(signsSrc) ?: return
+            val feats = near.map { s ->
+                Feature.fromGeometry(Point.fromLngLat(s.lon, s.lat)).apply {
+                    addStringProperty("label", s.label)
+                    addStringProperty("color", signColor(s.type))
+                }
+            }
+            src.setGeoJson(FeatureCollection.fromFeatures(feats))
+            signsKey = key
+        } catch (t: Throwable) {
+        }
+    }
+
+    private fun installSigns(style: Style) {
+        try {
+            signsKey = Int.MIN_VALUE
+            style.addSource(GeoJsonSource(signsSrc))
+            style.addLayer(
+                CircleLayer("ct-signs-circle", signsSrc).withProperties(
+                    PropertyFactory.circleColor(Expression.toColor(Expression.get("color"))),
+                    PropertyFactory.circleRadius(
+                        Expression.interpolate(
+                            Expression.linear(), Expression.zoom(),
+                            Expression.stop(14, 8f), Expression.stop(17, 15f), Expression.stop(20, 26f)
+                        )
+                    ),
+                    PropertyFactory.circleStrokeColor("#ffffff"),
+                    PropertyFactory.circleStrokeWidth(2.5f)
+                )
+            )
+            style.addLayer(
+                SymbolLayer("ct-signs-label", signsSrc).withProperties(
+                    PropertyFactory.textField(Expression.get("label")),
+                    PropertyFactory.textFont(arrayOf("Noto Sans Bold")),
+                    PropertyFactory.textSize(
+                        Expression.interpolate(
+                            Expression.linear(), Expression.zoom(),
+                            Expression.stop(14, 8f), Expression.stop(17, 12f), Expression.stop(20, 18f)
+                        )
+                    ),
+                    PropertyFactory.textColor("#ffffff"),
+                    PropertyFactory.textAllowOverlap(true),
+                    PropertyFactory.textIgnorePlacement(true),
+                    PropertyFactory.textPitchAlignment(Property.TEXT_PITCH_ALIGNMENT_VIEWPORT)
+                )
+            )
+        } catch (t: Throwable) {
+        }
     }
 
     private fun sunElevation(lat: Double, lon: Double, nowMs: Long): Double {
@@ -755,6 +837,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         m.setStyle(Style.Builder().fromUri(STYLE)) { style ->
             if (night) themeNight(style)
             tuneLabels(style)
+            installSigns(style)
             status = "Bản đồ đã tải"
         }
     }

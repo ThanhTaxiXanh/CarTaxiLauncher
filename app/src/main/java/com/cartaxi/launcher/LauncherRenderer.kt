@@ -26,7 +26,8 @@ data class UiState(
     val mapFrameW: Int,
     val mapFrameH: Int,
     val mapsStatus: String,
-    val streetName: String
+    val streetName: String,
+    val signs: SignsState = SignsState.EMPTY
 )
 
 object LauncherRenderer {
@@ -169,7 +170,7 @@ object LauncherRenderer {
         drawMain(c, main, st)
         drawCalendar(c, cal, st)
         drawQr(c, qr, st.qrFile)
-        drawSigns(c, signs)
+        drawSigns(c, signs, st)
         drawIcons(c, icons, st.selectedIcon)
     }
 
@@ -389,8 +390,14 @@ object LauncherRenderer {
         val sb = RectF(tb.left, tb.bottom + 12f * k, tb.left + padX * 2 + w3 + 10f * k + w4, tb.bottom + 12f * k + 80f * k)
         bubble(c, sb)
         val sy = sb.centerY() + nSize * 0.36f
-        text(c, spd, sb.left + padX, sy, nSize, Color.WHITE, true)
+        val lim = st.signs.limit
+        val over = lim != null && (st.speedKmh ?: 0) > lim
+        text(c, spd, sb.left + padX, sy, nSize, if (over) RED else Color.WHITE, true)
         text(c, "KM/H", sb.left + padX + w3 + 10f * k, sy, uSize, MUTED, true)
+        if (lim != null) {
+            val sr = sb.height() / 2f
+            speedSign(c, sb.right + 12f * k + sr, sb.centerY(), sr, lim, st.signs.estimated, over)
+        }
     }
 
     // ---------- lịch và sự kiện ----------
@@ -547,21 +554,165 @@ object LauncherRenderer {
         c.drawBitmap(qrScaled!!, panel.centerX() - dw / 2f, panel.centerY() - dh / 2f, null)
     }
 
-    // ---------- khung chờ cho biển báo ----------
+    // ---------- biển báo & giới hạn tốc độ ----------
 
-    private fun drawSigns(c: Canvas, r: RectF) {
+    private val oct = Path()
+    private val tmp = RectF()
+
+    private fun speedSign(c: Canvas, cx: Float, cy: Float, r: Float, value: Int?, est: Boolean, over: Boolean) {
+        fill.color = Color.WHITE
+        c.drawCircle(cx, cy, r, fill)
+        val ring = r * 0.2f
+        linePaint.strokeWidth = ring
+        linePaint.color = if (value == null) Color.rgb(150, 150, 150) else Color.rgb(214, 38, 38)
+        c.drawCircle(cx, cy, r - ring / 2f, linePaint)
+        val s = value?.toString() ?: "--"
+        val size = if (s.length >= 3) r * 0.8f else r * 1.0f
+        val shift = if (est && value != null) r * 0.08f else 0f
+        textMid(c, s, cx, cy - shift, size, if (over) RED else Color.BLACK, true, r * 1.1f)
+        if (est && value != null) {
+            textMid(c, "~", cx, cy + r * 0.55f, r * 0.42f, Color.rgb(110, 110, 110), true)
+        }
+    }
+
+    private fun signGlyph(c: Canvas, cx: Float, cy: Float, r: Float, s: SignItem) {
+        when (s.type) {
+            "speed" -> speedSign(c, cx, cy, r, s.value, false, false)
+            "stop" -> {
+                oct.reset()
+                for (i in 0 until 8) {
+                    val a = Math.toRadians(22.5 + 45.0 * i)
+                    val x = cx + (r * Math.cos(a)).toFloat()
+                    val y = cy + (r * Math.sin(a)).toFloat()
+                    if (i == 0) oct.moveTo(x, y) else oct.lineTo(x, y)
+                }
+                oct.close()
+                fill.color = Color.rgb(200, 30, 30)
+                c.drawPath(oct, fill)
+                textMid(c, "STOP", cx, cy, r * 0.52f, Color.WHITE, true, r * 1.6f)
+            }
+            "yield" -> {
+                tri.reset()
+                tri.moveTo(cx - r, cy - r * 0.8f)
+                tri.lineTo(cx + r, cy - r * 0.8f)
+                tri.lineTo(cx, cy + r * 0.95f)
+                tri.close()
+                fill.color = Color.rgb(214, 38, 38)
+                c.drawPath(tri, fill)
+                tri.reset()
+                tri.moveTo(cx - r * 0.5f, cy - r * 0.4f)
+                tri.lineTo(cx + r * 0.5f, cy - r * 0.4f)
+                tri.lineTo(cx, cy + r * 0.5f)
+                tri.close()
+                fill.color = Color.WHITE
+                c.drawPath(tri, fill)
+            }
+            "signals" -> {
+                tmp.set(cx - r * 0.55f, cy - r, cx + r * 0.55f, cy + r)
+                fill.color = Color.rgb(30, 34, 40)
+                c.drawRoundRect(tmp, r * 0.25f, r * 0.25f, fill)
+                fill.color = RED
+                c.drawCircle(cx, cy - r * 0.6f, r * 0.22f, fill)
+                fill.color = ACCENT
+                c.drawCircle(cx, cy, r * 0.22f, fill)
+                fill.color = GREEN_DAY
+                c.drawCircle(cx, cy + r * 0.6f, r * 0.22f, fill)
+            }
+            "camera" -> {
+                fill.color = Color.rgb(123, 31, 162)
+                tmp.set(cx - r * 0.4f, cy - r * 0.85f, cx + r * 0.4f, cy - r * 0.45f)
+                c.drawRoundRect(tmp, r * 0.12f, r * 0.12f, fill)
+                tmp.set(cx - r, cy - r * 0.6f, cx + r, cy + r * 0.7f)
+                c.drawRoundRect(tmp, r * 0.2f, r * 0.2f, fill)
+                fill.color = Color.WHITE
+                c.drawCircle(cx, cy + r * 0.05f, r * 0.4f, fill)
+                fill.color = Color.rgb(40, 20, 60)
+                c.drawCircle(cx, cy + r * 0.05f, r * 0.2f, fill)
+            }
+            "bump" -> {
+                tri.reset()
+                tri.moveTo(cx, cy - r)
+                tri.lineTo(cx + r, cy + r * 0.85f)
+                tri.lineTo(cx - r, cy + r * 0.85f)
+                tri.close()
+                fill.color = Color.rgb(214, 38, 38)
+                c.drawPath(tri, fill)
+                tri.reset()
+                tri.moveTo(cx, cy - r * 0.55f)
+                tri.lineTo(cx + r * 0.62f, cy + r * 0.6f)
+                tri.lineTo(cx - r * 0.62f, cy + r * 0.6f)
+                tri.close()
+                fill.color = Color.rgb(255, 214, 0)
+                c.drawPath(tri, fill)
+                textMid(c, "!", cx, cy + r * 0.2f, r * 0.8f, Color.BLACK, true)
+            }
+            else -> {
+                fill.color = BLUE
+                c.drawCircle(cx, cy, r, fill)
+                textMid(c, "!", cx, cy, r * 1.1f, Color.WHITE, true)
+            }
+        }
+    }
+
+    private fun fmtDist(m: Int): String = if (m >= 100) "${m / 10 * 10} m" else "$m m"
+
+    private fun drawSigns(c: Canvas, r: RectF, st: UiState) {
+        val sg = st.signs
         val k = minOf(r.width() / 318f, r.height() / 223f, 1.2f)
         card(c, r, 24f * k)
-        val pad = maxOf(8f, 16f * k)
-        text(c, "Biển báo & giao thông", r.left + pad, r.top + pad + maxOf(12f, 17f * k), maxOf(12f, 17f * k), Color.WHITE, true, Paint.Align.LEFT, r.width() - 2 * pad)
-        text(c, "Sẽ có ở bản cập nhật sau", r.left + pad, r.top + pad + maxOf(12f, 17f * k) + maxOf(14f, 20f * k), maxOf(11f, 13f * k), MUTED, false, Paint.Align.LEFT, r.width() - 2 * pad)
-        val cy = r.top + r.height() * 0.70f
-        val rad = maxOf(12f, 26f * k)
-        linePaint.strokeWidth = maxOf(3f, 6f * k)
-        linePaint.color = Color.argb(70, 214, 69, 65)
-        for (i in 0 until 3) {
-            val cx = r.left + r.width() * (2 * i + 1) / 6f
-            c.drawCircle(cx, cy, rad, linePaint)
+        val pad = maxOf(8f, 14f * k)
+        val inner = RectF(r.left + pad, r.top + pad, r.right - pad, r.bottom - pad)
+        val lim = sg.limit
+        val over = lim != null && (st.speedKmh ?: 0) > lim
+        val fs = maxOf(11f, 15f * k)
+        val sub = when {
+            over -> "Đang vượt tốc độ"
+            lim == null -> sg.status
+            sg.estimated -> "Ước tính theo loại đường"
+            else -> "Theo dữ liệu bản đồ"
+        }
+        val subColor = if (over) RED else MUTED
+        val wide = r.width() >= r.height() * 1.25f
+        val listTop: Float
+
+        if (wide) {
+            val sr = minOf(inner.height() * 0.30f, inner.width() * 0.16f)
+            val cx = inner.left + sr
+            val cy = inner.top + sr
+            speedSign(c, cx, cy, sr, lim, sg.estimated, over)
+            val tx = cx + sr + pad
+            val mw = inner.right - tx
+            text(c, "Giới hạn tốc độ", tx, cy - sr * 0.1f, fs * 1.1f, Color.WHITE, true, Paint.Align.LEFT, mw)
+            text(c, sub, tx, cy + sr * 0.4f, fs * 0.85f, subColor, false, Paint.Align.LEFT, mw)
+            listTop = cy + sr + pad
+        } else {
+            val sr = minOf(inner.width() * 0.24f, inner.height() * 0.2f)
+            val cx = inner.centerX()
+            val cy = inner.top + sr
+            speedSign(c, cx, cy, sr, lim, sg.estimated, over)
+            textMid(c, sub, cx, cy + sr + fs * 1.0f, fs * 0.85f, subColor, false, inner.width())
+            listTop = cy + sr + fs * 2.0f
+        }
+
+        val rowH = maxOf(24f, 34f * k)
+        val rows = minOf(3, ((inner.bottom - listTop) / rowH).toInt())
+        if (rows <= 0) return
+        if (sg.upcoming.isEmpty()) {
+            textMid(c, "Chưa có biển báo phía trước", inner.centerX(), listTop + rowH / 2f, fs * 0.9f, MUTED, false, inner.width())
+            return
+        }
+        val gr = rowH * 0.36f
+        for ((i, u) in sg.upcoming.take(rows).withIndex()) {
+            val cy = listTop + i * rowH + rowH / 2f
+            signGlyph(c, inner.left + gr, cy, gr, u.item)
+            val ds = fmtDist(u.distM)
+            val dcol = if (u.distM <= 80) RED else ACCENT
+            tp.typeface = Typeface.DEFAULT_BOLD
+            tp.textSize = fs
+            val dw = tp.measureText(ds)
+            text(c, ds, inner.right, cy + fs * 0.36f, fs, dcol, true, Paint.Align.RIGHT)
+            val nx = inner.left + gr * 2f + 8f * k
+            text(c, u.item.name, nx, cy + fs * 0.36f, fs, Color.WHITE, false, Paint.Align.LEFT, inner.right - dw - 8f * k - nx)
         }
     }
 

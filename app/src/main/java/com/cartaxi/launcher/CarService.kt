@@ -216,7 +216,8 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
                 mapFrameW = maps.frameW,
                 mapFrameH = maps.frameH,
                 mapsStatus = maps.status,
-                streetName = maps.streetName
+                streetName = maps.streetName,
+                signs = maps.signsState
             )
             LauncherRenderer.render(canvas, width, height, st)
         } finally {
