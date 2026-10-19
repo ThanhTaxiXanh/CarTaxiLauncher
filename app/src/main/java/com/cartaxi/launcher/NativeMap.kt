@@ -901,28 +901,32 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         return false
     }
 
-    // Nhãn đứng dậy hướng về người nhìn (nổi 3D), chữ to hơn để đọc đường phía trước
+    // Keep road names compact so the next junction remains visible.
+    // Viewport pitch keeps tilted-map text upright; a dark, softened halo
+    // makes bright lettering appear slightly raised without hiding the road.
     private fun tuneLabels(style: Style) {
         for (layer in style.layers) {
             if (layer !is SymbolLayer) continue
             val id = layer.id.lowercase()
+            if (!isLabel(id)) continue
             try {
-                layer.setProperties(PropertyFactory.textPitchAlignment(Property.TEXT_PITCH_ALIGNMENT_VIEWPORT))
-                if (isLabel(id)) {
-                    layer.setProperties(
-                        PropertyFactory.textRotationAlignment(Property.TEXT_ROTATION_ALIGNMENT_MAP),
-                        PropertyFactory.textSize(
-                            Expression.interpolate(
-                                Expression.linear(), Expression.zoom(),
-                                Expression.stop(14, 13f), Expression.stop(16, 18f),
-                                Expression.stop(18, 24f), Expression.stop(20, 28f)
-                            )
-                        ),
-                        PropertyFactory.textHaloWidth(2.2f)
-                    )
-                }
+                layer.setProperties(
+                    PropertyFactory.textPitchAlignment(Property.TEXT_PITCH_ALIGNMENT_VIEWPORT),
+                    PropertyFactory.textRotationAlignment(Property.TEXT_ROTATION_ALIGNMENT_MAP),
+                    PropertyFactory.textSize(
+                        Expression.interpolate(
+                            Expression.linear(), Expression.zoom(),
+                            Expression.stop(14, 10f), Expression.stop(16, 14f),
+                            Expression.stop(18, 18f), Expression.stop(20, 21f)
+                        )
+                    ),
+                    PropertyFactory.textColor(if (night) "#f8fbff" else "#26384d"),
+                    PropertyFactory.textHaloColor(if (night) "#091429" else "#ffffff"),
+                    PropertyFactory.textHaloWidth(if (night) 2.0f else 1.8f),
+                    PropertyFactory.textHaloBlur(0.7f)
+                )
             } catch (t: Throwable) {
-                logErr("NativeMap:884", t)
+                logErr("NativeMap:tuneLabels", t)
             }
         }
     }
