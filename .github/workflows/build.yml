@@ -43,6 +43,40 @@ jobs:
             rm -f "$apk"
           done
 
+      - name: Verify existing PKCS12 unlocks with KEYTHANHTAXIXANH and matches build-71
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYTHANHTAXIXANH }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$KEYSTORE_PASSWORD" ]]; then
+            echo '::error::GitHub Actions secret KEYTHANHTAXIXANH is not configured'
+            exit 1
+          fi
+          key_file="$RUNNER_TEMP/check-original-signing.p12"
+          apk="$RUNNER_TEMP/cartaxi-original-build-71.apk"
+          trap 'rm -f "$key_file" "$apk"' EXIT
+          # Retrieve only the historical tracked keystore; never print/store as an artifact.
+          git fetch --no-tags --depth=1 origin main
+          git show origin/main:signing/cartaxi-release.p12 > "$key_file"
+          chmod 600 "$key_file"
+          if ! keytool -list -storetype PKCS12 -keystore "$key_file" -storepass "$KEYSTORE_PASSWORD" -alias cartaxi >/dev/null 2>&1; then
+            echo '::error::KEYTHANHTAXIXANH cannot unlock the historical cartaxi-release.p12 / alias cartaxi'
+            exit 1
+          fi
+          echo 'PASS: KEYTHANHTAXIXANH unlocks historical PKCS12 keystore.'
+          curl --fail --location --retry 3 --silent --show-error \
+            https://github.com/ThanhTaxiXanh/CarTaxiLauncher/releases/download/build-71/app-debug.apk -o "$apk"
+          expected=$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$apk" | sed -n 's/.*Signer #1 certificate SHA-256 digest: //p' | head -1 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')
+          actual=$(keytool -exportcert -rfc -storetype PKCS12 -keystore "$key_file" -storepass "$KEYSTORE_PASSWORD" -alias cartaxi 2>/dev/null | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')
+          if [[ -z "$expected" || -z "$actual" || "$expected" != "$actual" ]]; then
+            echo '::error::Keystore unlocks, but its signing certificate does NOT match build-71. Do NOT use this key for an in-place update.'
+            exit 1
+          fi
+          echo 'PASS: Keystore signing certificate matches build-71; can preserve Android update compatibility.'
+
+
   publish:
     if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true && github.ref == 'refs/heads/main'
     needs: verify
