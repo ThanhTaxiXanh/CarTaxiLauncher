@@ -180,6 +180,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locListener, Looper.getMainLooper())
             lm.registerGnssStatusCallback(appCtx.mainExecutor, gnssCallback)
         } catch (e: Exception) {
+            logErr("CarService:182", e)
         }
     }
 
@@ -190,6 +191,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
             lm.removeUpdates(locListener)
             lm.unregisterGnssStatusCallback(gnssCallback)
         } catch (e: Exception) {
+            logErr("CarService:192", e)
         }
     }
 

@@ -22,19 +22,14 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
-import rikka.shizuku.Shizuku
 import java.io.File
 
 class MainActivity : Activity() {
     private val reqPick = 2
+    private val reqLocation = 1
     private var pad = 0
     private lateinit var preview: ImageView
-    private lateinit var status: TextView
     private lateinit var eventBox: LinearLayout
-
-    private val permListener = Shizuku.OnRequestPermissionResultListener { _, _ ->
-        runOnUiThread { updateStatus() }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,7 +44,6 @@ class MainActivity : Activity() {
             text = "CarTaxiLauncher"
             textSize = 22f
         }
-        status = TextView(this).apply { textSize = 16f }
         preview = ImageView(this).apply {
             adjustViewBounds = true
             maxHeight = (240 * density).toInt()
@@ -68,12 +62,15 @@ class MainActivity : Activity() {
         val perm = Button(this).apply {
             text = "Cấp quyền vị trí (đo tốc độ)"
             setOnClickListener {
-                this@MainActivity.requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 1)
+                // Android 12+ bắt buộc xin FINE cùng COARSE trong một yêu cầu, nếu không hệ thống bỏ qua.
+                this@MainActivity.requestPermissions(
+                    arrayOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                    ),
+                    reqLocation
+                )
             }
-        }
-        val shz = Button(this).apply {
-            text = "Kết nối Shizuku"
-            setOnClickListener { this@MainActivity.connectShizuku() }
         }
         val evTitle = TextView(this).apply {
             text = "Sự kiện hiển thị trên widget Lịch"
@@ -87,8 +84,6 @@ class MainActivity : Activity() {
         }
 
         root.addView(title)
-        root.addView(status)
-        root.addView(shz)
         root.addView(preview)
         root.addView(pick)
         root.addView(perm)
@@ -99,25 +94,20 @@ class MainActivity : Activity() {
         scroll.addView(root)
         setContentView(scroll)
 
-        try {
-            Shizuku.addRequestPermissionResultListener(permListener)
-        } catch (t: Throwable) {
-        }
         refreshPreview()
         refreshEvents()
     }
 
-    override fun onResume() {
-        super.onResume()
-        updateStatus()
-    }
-
-    override fun onDestroy() {
-        try {
-            Shizuku.removeRequestPermissionResultListener(permListener)
-        } catch (t: Throwable) {
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != reqLocation) return
+        val fine = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val msg = if (fine) {
+            "Đã cấp quyền vị trí chính xác"
+        } else {
+            "Cần cấp vị trí \"Chính xác\" (không phải \"Gần đúng\") để đo tốc độ"
         }
-        super.onDestroy()
+        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
     }
 
     // ---------- sự kiện ----------
@@ -213,36 +203,6 @@ class MainActivity : Activity() {
                 }
             }
             .show()
-    }
-
-    // ---------- Shizuku ----------
-
-    private fun updateStatus() {
-        val s = try {
-            if (!Shizuku.pingBinder()) {
-                "Shizuku: chưa chạy"
-            } else if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
-                "Shizuku: đã kết nối"
-            } else {
-                "Shizuku: đang chạy, chưa cấp quyền"
-            }
-        } catch (t: Throwable) {
-            "Shizuku: không khả dụng"
-        }
-        status.text = s
-    }
-
-    private fun connectShizuku() {
-        try {
-            if (!Shizuku.pingBinder()) {
-                Toast.makeText(this, "Hãy mở app Shizuku và bấm Start trước", Toast.LENGTH_LONG).show()
-            } else if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
-                Shizuku.requestPermission(100)
-            }
-        } catch (t: Throwable) {
-            Toast.makeText(this, "Lỗi Shizuku: " + t.message, Toast.LENGTH_LONG).show()
-        }
-        updateStatus()
     }
 
     // ---------- ảnh QR ----------
