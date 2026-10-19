@@ -40,7 +40,7 @@ data class SignsState(
 
 // Giới hạn tốc độ + biển báo lấy từ OpenStreetMap (Overpass API).
 // Bản đồ OpenFreeMap không chứa maxspeed / biển báo nên phải tải riêng.
-class RoadSigns(private val cacheFile: File) {
+class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
     companion object {
         private val ENDPOINTS = arrayOf(
             "https://overpass-api.de/api/interpreter",
@@ -74,6 +74,7 @@ class RoadSigns(private val cacheFile: File) {
 
     private var lastWay: Way? = null
     private var lastData: Data? = null
+    private val extraSigns: List<SignItem> = parseOpenGeoJson(supplementalGeoJson)
     private var shown: Int? = null
     private var shownEst = false
     private var shownMs = 0L
@@ -137,6 +138,7 @@ class RoadSigns(private val cacheFile: File) {
             "node$a[\"enforcement\"=\"maxspeed\"];" +
             "node$a[\"traffic_calming\"];" +
             "node$a[\"traffic_sign\"];" +
+            "node$a[\"overtaking\"=\"no\"];" +
             "node$a[\"maxspeed\"];" +
             ");out tags geom;"
     }
@@ -220,6 +222,7 @@ class RoadSigns(private val cacheFile: File) {
     private fun classify(t: JSONObject, lat: Double, lon: Double): SignItem? {
         val hw = t.str("highway")
         val ms = parseSpeed(t.str("maxspeed"))
+        val trafficSign = t.str("traffic_sign")?.lowercase() ?: ""
         return when {
             hw == "speed_camera" || t.str("enforcement") == "maxspeed" ->
                 SignItem(lat, lon, "camera", "CAM", if (ms != null) "Camera tốc độ $ms" else "Camera tốc độ", ms ?: 0)
@@ -227,6 +230,8 @@ class RoadSigns(private val cacheFile: File) {
             hw == "give_way" -> SignItem(lat, lon, "yield", "NH", "Nhường đường", 0)
             hw == "traffic_signals" -> SignItem(lat, lon, "signals", "ĐÈN", "Đèn giao thông", 0)
             t.str("traffic_calming") != null -> SignItem(lat, lon, "bump", "GỜ", "Gờ giảm tốc", 0)
+            t.str("overtaking") == "no" || trafficSign.contains("no_overtaking") || trafficSign.contains("no-overtaking") || trafficSign.contains("p.125") ->
+                SignItem(lat, lon, "no_overtaking", "CẤM", "Cấm vượt", 0)
             ms != null -> SignItem(lat, lon, "speed", ms.toString(), "Giới hạn $ms km/h", ms)
             t.str("traffic_sign") != null -> fromTrafficSign(t.str("traffic_sign")!!, lat, lon)
             else -> null
@@ -243,7 +248,46 @@ class RoadSigns(private val cacheFile: File) {
                 SignItem(lat, lon, "other", "!", "Biển giới hạn tốc độ", 0)
             s.contains("stop") || s.contains("122") -> SignItem(lat, lon, "stop", "STOP", "Biển dừng", 0)
             s.contains("give_way") || s.contains("yield") -> SignItem(lat, lon, "yield", "NH", "Nhường đường", 0)
+            s.contains("no_overtaking") || s.contains("no-overtaking") || s.contains("p.125") ->
+                SignItem(lat, lon, "no_overtaking", "CẤM", "Cấm vượt", 0)
             else -> SignItem(lat, lon, "other", "!", "Biển báo: " + ts.take(24), 0)
+        }
+    }
+
+    // Open-data supplement is distributed only when its source/license is verified.
+    // Coordinates are GeoJSON [longitude, latitude]. Never auto-infer legal limits.
+    private fun parseOpenGeoJson(text: String): List<SignItem> {
+        if (text.isBlank()) return emptyList()
+        return try {
+            val a = JSONObject(text).getJSONArray("features")
+            val out = ArrayList<SignItem>()
+            for (i in 0 until a.length()) {
+                val obj = a.getJSONObject(i)
+                val props = obj.optJSONObject("properties") ?: continue
+                val geom = obj.optJSONObject("geometry") ?: continue
+                if (geom.optString("type") != "Point") continue
+                val xy = geom.optJSONArray("coordinates") ?: continue
+                if (xy.length() < 2) continue
+                val lon = xy.getDouble(0)
+                val lat = xy.getDouble(1)
+                if (lat !in -90.0..90.0 || lon !in -180.0..180.0) continue
+                if (!props.optBoolean("verified", false) || props.optString("source").isBlank()) continue
+                val value = props.optInt("value", 0)
+                val sign = when (props.optString("type")) {
+                    "speed" -> if (value in 5..160) SignItem(lat, lon, "speed", "$value", "Giới hạn $value km/h", value) else null
+                    "no_overtaking" -> SignItem(lat, lon, "no_overtaking", "CẤM", "Cấm vượt", 0)
+                    "camera" -> SignItem(lat, lon, "camera", "CAM", "Camera tốc độ", 0)
+                    "stop" -> SignItem(lat, lon, "stop", "STOP", "Biển dừng", 0)
+                    "yield" -> SignItem(lat, lon, "yield", "NH", "Nhường đường", 0)
+                    "bump" -> SignItem(lat, lon, "bump", "GỜ", "Gờ giảm tốc", 0)
+                    else -> null
+                }
+                if (sign != null) out.add(sign)
+            }
+            out
+        } catch (e: Exception) {
+            logErr("RoadSigns:openGeoJson", e)
+            emptyList()
         }
     }
 
@@ -259,9 +303,9 @@ class RoadSigns(private val cacheFile: File) {
 
     /** Biển báo trong bán kính, dùng để vẽ lên bản đồ. */
     fun nearby(lat: Double, lon: Double, radius: Double, max: Int): List<SignItem> {
-        val d = data ?: return emptyList()
-        if (d.stale || dist(lat, lon, d.lat, d.lon) > MAX_DATA_DISTANCE_M || SystemClock.elapsedRealtime() - d.timeMs > MAX_AGE_MS) return emptyList()
-        return d.signs.filter { dist(lat, lon, it.lat, it.lon) <= radius }
+        val d = data
+        val osm = if (d != null && !d.stale && dist(lat, lon, d.lat, d.lon) <= MAX_DATA_DISTANCE_M && SystemClock.elapsedRealtime() - d.timeMs <= MAX_AGE_MS) d.signs else emptyList()
+        return (osm + extraSigns).filter { dist(lat, lon, it.lat, it.lon) <= radius }
             .sortedBy { dist(lat, lon, it.lat, it.lon) }
             .take(max)
     }
@@ -284,24 +328,21 @@ class RoadSigns(private val cacheFile: File) {
 
     /** Gọi mỗi giây. heading = hướng đi hiện tại (độ). */
     fun state(lat: Double, lon: Double, heading: Double, moving: Boolean): SignsState {
-        val d = data ?: return SignsState(
-            null, false, emptyList(),
-            if (fetching) "Đang tải biển báo..." else if (error.isNotEmpty()) error else "Chưa có dữ liệu"
-        )
+        val d = data
         val now = SystemClock.elapsedRealtime()
-        if (d !== lastData) {
+        if (d != null && d !== lastData) {
             lastData = d
             lastWay = null
             shown = null
             pendV = null
             pendN = 0
         }
-        if (d.stale || dist(lat, lon, d.lat, d.lon) > MAX_DATA_DISTANCE_M || now - d.timeMs > MAX_AGE_MS) {
+        val usable = d != null && !d.stale && dist(lat, lon, d.lat, d.lon) <= MAX_DATA_DISTANCE_M && now - d.timeMs <= MAX_AGE_MS
+        if (!usable) {
             shown = null
             lastWay = null
             pendV = null
             pendN = 0
-            return SignsState(null, false, emptyList(), if (fetching) "Đang cập nhật biển báo..." else if (error.isNotEmpty()) error else "Dữ liệu biển báo đã cũ")
         }
         val kx = 111320.0 * cos(Math.toRadians(lat))
         val ky = 111320.0
@@ -310,7 +351,7 @@ class RoadSigns(private val cacheFile: File) {
         var bestScore = 1e9
         var bestWay: Way? = null
         var bestFwd = true
-        for (w in d.ways) {
+        for (w in if (usable) d!!.ways else emptyList()) {
             val p = w.pts
             val n = p.size / 2
             for (i in 0 until n - 1) {
@@ -362,7 +403,7 @@ class RoadSigns(private val cacheFile: File) {
 
         // 2) biển báo phía trước (trong nón 30° trước mũi xe, tối đa 350 m)
         val cand = ArrayList<UpcomingSign>()
-        for (s in d.signs) {
+        for (s in (if (usable) d!!.signs else emptyList()) + extraSigns) {
             val dx = (s.lon - lon) * kx
             val dy = (s.lat - lat) * ky
             val dd = sqrt(dx * dx + dy * dy)
@@ -381,6 +422,6 @@ class RoadSigns(private val cacheFile: File) {
             if (ups.none { it.item.type == c.item.type && abs(it.distM - c.distM) < 25 }) ups.add(c)
             if (ups.size >= 4) break
         }
-        return SignsState(shown, shownEst, ups, if (shown == null) "Chưa xác định giới hạn trên đường" else "Giới hạn theo dữ liệu OSM")
+        return SignsState(shown, shownEst, ups, if (!usable) "Chưa có tốc độ giới hạn tin cậy" else if (shown == null) "Chưa xác định giới hạn trên đường" else "Giới hạn theo dữ liệu OSM")
     }
 }

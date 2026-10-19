@@ -379,7 +379,7 @@ object LauncherRenderer {
         bubble(c, chip)
         textMid(c, label, chip.centerX(), chip.centerY(), lSize, SOFT, true)
 
-        val spd = (st.speedKmh ?: 0).toString()
+        val spd = if (st.gpsFix && st.speedKmh != null) st.speedKmh.toString() else "--"
         val nSize = 60f * k
         val uSize = maxOf(11f, 18f * k)
         tp.typeface = Typeface.DEFAULT_BOLD
@@ -391,12 +391,12 @@ object LauncherRenderer {
         bubble(c, sb)
         val sy = sb.centerY() + nSize * 0.36f
         val lim = st.signs.limit
-        val over = lim != null && (st.speedKmh ?: 0) > lim
+        val over = lim != null && st.gpsFix && st.speedKmh != null && st.speedKmh > lim
         text(c, spd, sb.left + padX, sy, nSize, if (over) RED else Color.WHITE, true)
         text(c, "KM/H", sb.left + padX + w3 + 10f * k, sy, uSize, MUTED, true)
         if (lim != null) {
-            val sr = sb.height() / 2f
-            speedSign(c, sb.right + 12f * k + sr, sb.centerY(), sr, lim, st.signs.estimated, over)
+            val sr = minOf(sb.height() / 2f, (m.right - sb.right - 18f * k) / 2f)
+            if (sr > 12f * k) speedSign(c, sb.right + 10f * k + sr, sb.centerY(), sr, lim, st.signs.estimated, over)
         }
     }
 
@@ -578,6 +578,22 @@ object LauncherRenderer {
     private fun signGlyph(c: Canvas, cx: Float, cy: Float, r: Float, s: SignItem) {
         when (s.type) {
             "speed" -> speedSign(c, cx, cy, r, s.value, false, false)
+            "no_overtaking" -> {
+                fill.color = Color.WHITE
+                c.drawCircle(cx, cy, r, fill)
+                linePaint.strokeWidth = r * 0.19f
+                linePaint.color = RED
+                c.drawCircle(cx, cy, r * 0.91f, linePaint)
+                // Original vector illustration; no third-party assets.
+                for (i in 0..1) {
+                    val x = cx + (if (i == 0) -0.35f else 0.32f) * r
+                    fill.color = if (i == 0) Color.rgb(220, 35, 42) else Color.BLACK
+                    tmp.set(x - r * 0.25f, cy - r * 0.15f, x + r * 0.25f, cy + r * 0.25f)
+                    c.drawRoundRect(tmp, r * 0.08f, r * 0.08f, fill)
+                    c.drawCircle(x - r * 0.17f, cy + r * 0.27f, r * 0.07f, fill)
+                    c.drawCircle(x + r * 0.17f, cy + r * 0.27f, r * 0.07f, fill)
+                }
+            }
             "stop" -> {
                 oct.reset()
                 for (i in 0 until 8) {
@@ -663,13 +679,13 @@ object LauncherRenderer {
         val pad = maxOf(8f, 14f * k)
         val inner = RectF(r.left + pad, r.top + pad, r.right - pad, r.bottom - pad)
         val lim = sg.limit
-        val over = lim != null && (st.speedKmh ?: 0) > lim
+        val over = lim != null && st.gpsFix && st.speedKmh != null && st.speedKmh > lim
         val fs = maxOf(11f, 15f * k)
         val sub = when {
             over -> "Đang vượt tốc độ"
             lim == null -> sg.status
-            sg.estimated -> "Ước tính theo loại đường"
-            else -> "Theo dữ liệu bản đồ"
+            sg.estimated -> "Giá trị ước tính"
+            else -> "Nguồn: OpenStreetMap"
         }
         val subColor = if (over) RED else MUTED
         val wide = r.width() >= r.height() * 1.25f
@@ -710,9 +726,14 @@ object LauncherRenderer {
             tp.typeface = Typeface.DEFAULT_BOLD
             tp.textSize = fs
             val dw = tp.measureText(ds)
-            text(c, ds, inner.right, cy + fs * 0.36f, fs, dcol, true, Paint.Align.RIGHT)
+            // Datmap-inspired distance badge with original drawn UI.
+            val pillW = minOf(inner.width() * 0.38f, dw + 16f * k)
+            val distancePill = RectF(inner.right - pillW, cy - rowH * 0.34f, inner.right, cy + rowH * 0.34f)
+            fill.color = if (u.distM < 100) Color.rgb(220, 62, 69) else Color.rgb(175, 57, 69)
+            c.drawRoundRect(distancePill, rowH * 0.3f, rowH * 0.3f, fill)
+            textMid(c, ds, distancePill.centerX(), distancePill.centerY(), fs * 0.89f, Color.WHITE, true, distancePill.width() - 5f * k)
             val nx = inner.left + gr * 2f + 8f * k
-            text(c, u.item.name, nx, cy + fs * 0.36f, fs, Color.WHITE, false, Paint.Align.LEFT, inner.right - dw - 8f * k - nx)
+            text(c, u.item.name, nx, cy + fs * 0.36f, fs, Color.WHITE, false, Paint.Align.LEFT, distancePill.left - 8f * k - nx)
         }
     }
 

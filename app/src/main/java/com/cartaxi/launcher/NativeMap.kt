@@ -85,7 +85,10 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     var onFrame: (() -> Unit)? = null
     var signsState: SignsState = SignsState.EMPTY
 
-    private val signs = RoadSigns(java.io.File(appCtx.filesDir, "signs_cache.json"))
+    private val signs = RoadSigns(
+        java.io.File(appCtx.filesDir, "signs_cache.json"),
+        runCatching { appCtx.assets.open("verified_signs.geojson").bufferedReader().use { it.readText() } }.getOrDefault("")
+    )
     private var signsKey = Int.MIN_VALUE
     private val signsSrc = "ct-signs"
 
@@ -674,6 +677,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
 
     private fun signColor(type: String): String = when (type) {
         "speed" -> "#d62626"
+        "no_overtaking" -> "#e5484d"
         "camera" -> "#7b1fa2"
         "stop" -> "#c62828"
         "yield" -> "#ef6c00"
