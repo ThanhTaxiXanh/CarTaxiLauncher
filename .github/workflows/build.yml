@@ -17,25 +17,25 @@ jobs:
       - name: Check signing secret
         shell: bash
         env:
-          CARTAXI_KEYSTORE_PASSWORD: ${{ secrets.CARTAXI_KEYSTORE_PASSWORD }}
+          KEYTHANHTAXIXANH: ${{ secrets.KEYTHANHTAXIXANH }}
         run: |
-          if [ -z "$CARTAXI_KEYSTORE_PASSWORD" ]; then
-            echo "::error::Thieu secret CARTAXI_KEYSTORE_PASSWORD (Settings > Secrets and variables > Actions)"
+          if [ -z "$KEYTHANHTAXIXANH" ]; then
+            echo "::error::Thieu secret KEYTHANHTAXIXANH (Settings > Secrets and variables > Actions)"
             exit 1
           fi
-          if [ ${#CARTAXI_KEYSTORE_PASSWORD} -lt 16 ]; then
-            echo "::error::CARTAXI_KEYSTORE_PASSWORD qua ngan, can it nhat 16 ky tu"
+          if [ ${#KEYTHANHTAXIXANH} -lt 16 ]; then
+            echo "::error::KEYTHANHTAXIXANH qua ngan, can it nhat 16 ky tu"
             exit 1
           fi
       - name: Create signing key (first run only)
         shell: bash
         env:
-          CARTAXI_KEYSTORE_PASSWORD: ${{ secrets.CARTAXI_KEYSTORE_PASSWORD }}
+          KEYTHANHTAXIXANH: ${{ secrets.KEYTHANHTAXIXANH }}
         run: |
           if [ ! -f signing/cartaxi-release.p12 ]; then
             mkdir -p signing
             keytool -genkeypair -keystore signing/cartaxi-release.p12 -storetype PKCS12 \
-              -storepass "$CARTAXI_KEYSTORE_PASSWORD" -keypass "$CARTAXI_KEYSTORE_PASSWORD" -alias cartaxi \
+              -storepass "$KEYTHANHTAXIXANH" -keypass "$KEYTHANHTAXIXANH" -alias cartaxi \
               -keyalg RSA -keysize 2048 -validity 36500 \
               -dname "CN=CarTaxiLauncher, O=ThanhTaxiXanh, C=VN"
             echo "NEW_KEY=1" >> "$GITHUB_ENV"
@@ -55,7 +55,7 @@ jobs:
       - name: Build APK
         shell: bash
         env:
-          CARTAXI_KEYSTORE_PASSWORD: ${{ secrets.CARTAXI_KEYSTORE_PASSWORD }}
+          KEYTHANHTAXIXANH: ${{ secrets.KEYTHANHTAXIXANH }}
         run: |
           set -o pipefail
           gradle :app:assembleDebug --no-daemon --console=plain 2>&1 | tee build.log
