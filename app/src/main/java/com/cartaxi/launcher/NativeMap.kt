@@ -724,7 +724,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                     PropertyFactory.circleColor(
                         Expression.switchCase(
                             Expression.eq(Expression.get("type"), Expression.literal("speed")),
-                            Expression.color("#ffffff"),
+                            Expression.toColor(Expression.literal("#ffffff")),
                             Expression.toColor(Expression.get("color"))
                         )
                     ),
@@ -737,8 +737,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                     PropertyFactory.circleStrokeColor(
                         Expression.switchCase(
                             Expression.eq(Expression.get("type"), Expression.literal("speed")),
-                            Expression.color("#d62626"),
-                            Expression.color("#ffffff")
+                            Expression.toColor(Expression.literal("#d62626")),
+                            Expression.toColor(Expression.literal("#ffffff"))
                         )
                     ),
                     PropertyFactory.circleStrokeWidth(2.5f)
@@ -757,8 +757,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                     PropertyFactory.textColor(
                         Expression.switchCase(
                             Expression.eq(Expression.get("type"), Expression.literal("speed")),
-                            Expression.color("#121212"),
-                            Expression.color("#ffffff")
+                            Expression.toColor(Expression.literal("#121212")),
+                            Expression.toColor(Expression.literal("#ffffff"))
                         )
                     ),
                     PropertyFactory.textAllowOverlap(true),
