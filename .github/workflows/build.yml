@@ -29,6 +29,19 @@ jobs:
           gradle-version: '8.9'
       - name: Build development APK
         run: gradle :app:assembleDebug --no-daemon --console=plain
+      - name: Audit historical release APK signing certificates
+        shell: bash
+        run: |
+          set -euo pipefail
+          for release in 1 71; do
+            apk="$RUNNER_TEMP/cartaxi-build-${release}.apk"
+            curl --fail --location --retry 3 --silent --show-error \
+              "https://github.com/ThanhTaxiXanh/CarTaxiLauncher/releases/download/build-${release}/app-debug.apk" -o "$apk"
+            test -s "$apk"
+            echo "--- Signing certificate for build-${release} ---"
+            "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$apk" | grep -E 'Signer #1 certificate SHA-256 digest|Signer #1 certificate DN'
+            rm -f "$apk"
+          done
 
   publish:
     if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true && github.ref == 'refs/heads/main'
