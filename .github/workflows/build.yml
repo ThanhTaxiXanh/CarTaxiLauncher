@@ -55,7 +55,7 @@ jobs:
       - name: Build APK
         shell: bash
         env:
-          KEYTHANHTAXIXANH: ${{ secrets.KEYTHANHTAXIXANH }}
+          CARTAXI_KEYSTORE_PASSWORD: ${{ secrets.CARTAXI_KEYSTORE_PASSWORD }}
         run: |
           set -o pipefail
           gradle :app:assembleDebug --no-daemon --console=plain 2>&1 | tee build.log
