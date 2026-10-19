@@ -16,14 +16,15 @@ android {
         versionName = "0.1.$run"
     }
 
-    // Mật khẩu khóa ký lấy từ biến môi trường (GitHub Secret CARTAXI_KEYSTORE_PASSWORD).
-    // Không có biến này (build cục bộ) thì dùng khóa debug mặc định của Android.
-    val keystorePassword: String? = System.getenv("CARTAXI_KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() }
+    // Never configure production signing from a checked-in private key.
+    val keystorePath = System.getenv("CARTAXI_KEYSTORE_FILE")?.takeIf(String::isNotBlank)
+    val keystorePassword = System.getenv("CARTAXI_KEYSTORE_PASSWORD")?.takeIf(String::isNotBlank)
+    val signingReady = keystorePath != null && keystorePassword != null
 
     signingConfigs {
-        if (keystorePassword != null) {
-            create("cartaxi") {
-                storeFile = rootProject.file("signing/cartaxi-release.p12")
+        if (signingReady) {
+            create("cartaxiRelease") {
+                storeFile = file(keystorePath!!)
                 storeType = "pkcs12"
                 storePassword = keystorePassword
                 keyAlias = "cartaxi"
@@ -34,8 +35,11 @@ android {
 
     buildTypes {
         getByName("debug") {
-            if (keystorePassword != null) {
-                signingConfig = signingConfigs.getByName("cartaxi")
+            // Standard Android debug keystore; never used for release publishing.
+        }
+        getByName("release") {
+            if (signingReady) {
+                signingConfig = signingConfigs.getByName("cartaxiRelease")
             }
         }
     }
