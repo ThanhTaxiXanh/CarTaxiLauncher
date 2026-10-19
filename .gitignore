@@ -11,9 +11,16 @@ captures/
 .externalNativeBuild/
 .cxx/
 
-# OS
+# OS and logs
 .DS_Store
 Thumbs.db
-
-# Build logs
 build.log
+
+# Keep credentials and private signing keys out of Git
+signing/
+*.p12
+*.pfx
+*.jks
+*.keystore
+.env
+.env.*

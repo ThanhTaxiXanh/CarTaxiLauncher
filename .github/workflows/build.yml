@@ -1,71 +1,154 @@
-name: Build
+name: Build and verify
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      inspect_signing:
+        description: 'Check existing KEYTHANHTAXIXANH keystore and show PUBLIC certificate fingerprint only'
+        required: true
+        type: boolean
+        default: false
+      publish_release:
+        description: 'Publish a signed release with the approved private key (requires reinstall from build-71)'
+        required: true
+        type: boolean
+        default: false
+
 permissions:
-  contents: write
+  contents: read
+
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
-      - name: Check signing secret
-        shell: bash
-        env:
-          KEYTHANHTAXIXANH: ${{ secrets.KEYTHANHTAXIXANH }}
-        run: |
-          if [ -z "$KEYTHANHTAXIXANH" ]; then
-            echo "::error::Thieu secret KEYTHANHTAXIXANH (Settings > Secrets and variables > Actions)"
-            exit 1
-          fi
-          if [ ${#KEYTHANHTAXIXANH} -lt 16 ]; then
-            echo "::error::KEYTHANHTAXIXANH qua ngan, can it nhat 16 ky tu"
-            exit 1
-          fi
-      - name: Create signing key (first run only)
-        shell: bash
-        env:
-          KEYTHANHTAXIXANH: ${{ secrets.KEYTHANHTAXIXANH }}
-        run: |
-          if [ ! -f signing/cartaxi-release.p12 ]; then
-            mkdir -p signing
-            keytool -genkeypair -keystore signing/cartaxi-release.p12 -storetype PKCS12 \
-              -storepass "$KEYTHANHTAXIXANH" -keypass "$KEYTHANHTAXIXANH" -alias cartaxi \
-              -keyalg RSA -keysize 2048 -validity 36500 \
-              -dname "CN=CarTaxiLauncher, O=ThanhTaxiXanh, C=VN"
-            echo "NEW_KEY=1" >> "$GITHUB_ENV"
-          fi
-      - name: Save signing key to repo
-        if: env.NEW_KEY == '1'
-        shell: bash
-        run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add signing/cartaxi-release.p12
-          git commit -m "Add signing key"
-          git push origin HEAD:"${GITHUB_REF_NAME}"
+          java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.9"
-      - name: Build APK
+          gradle-version: '8.9'
+      - name: Build development APK
+        run: gradle :app:assembleDebug --no-daemon --console=plain
+      - name: Audit historical release APK signing certificates
+        shell: bash
+        run: |
+          set -euo pipefail
+          for release in 1 71; do
+            apk="$RUNNER_TEMP/cartaxi-build-${release}.apk"
+            curl --fail --location --retry 3 --silent --show-error \
+              "https://github.com/ThanhTaxiXanh/CarTaxiLauncher/releases/download/build-${release}/app-debug.apk" -o "$apk"
+            test -s "$apk"
+            echo "--- Signing certificate for build-${release} ---"
+            "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$apk" | grep -E 'Signer #1 certificate SHA-256 digest|Signer #1 certificate DN'
+            rm -f "$apk"
+          done
+
+
+  inspect_signing:
+    if: github.event_name == 'workflow_dispatch' && inputs.inspect_signing == true && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Inspect approved PKCS12 certificate
         shell: bash
         env:
-          KEYTHANHTAXIXANH: ${{ secrets.KEYTHANHTAXIXANH }}
+          KEYSTORE_BASE64: ${{ secrets.CARTAXI_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYTHANHTAXIXANH }}
         run: |
-          set -o pipefail
-          gradle :app:assembleDebug --no-daemon --console=plain 2>&1 | tee build.log
-      - name: Show compile errors
-        if: failure()
+          set -euo pipefail
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" ]]; then
+            echo '::error::Configure CARTAXI_KEYSTORE_BASE64 and KEYTHANHTAXIXANH secrets first'
+            exit 1
+          fi
+          key="$RUNNER_TEMP/cartaxi-inspect.p12"
+          trap 'rm -f "$key"' EXIT
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$key"
+          if ! keytool -list -storetype PKCS12 -keystore "$key" -storepass "$KEYSTORE_PASSWORD" -alias cartaxi >/dev/null 2>&1; then
+            echo '::error::Cannot open provided PKCS12 signing key with KEYTHANHTAXIXANH'
+            exit 1
+          fi
+          digest=$(keytool -exportcert -rfc -storetype PKCS12 -keystore "$key" -storepass "$KEYSTORE_PASSWORD" -alias cartaxi 2>/dev/null | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')
+          [[ -n "$digest" ]] || { echo '::error::Cannot inspect certificate'; exit 1; }
+          echo "PUBLIC signing certificate SHA-256 for CARTAXI_SIGNING_CERT_SHA256: $digest"
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Restore and validate signing key
         shell: bash
+        env:
+          CARTAXI_KEYSTORE_BASE64: ${{ secrets.CARTAXI_KEYSTORE_BASE64 }}
+          CARTAXI_KEYSTORE_PASSWORD: ${{ secrets.KEYTHANHTAXIXANH }}
+          CARTAXI_SIGNING_CERT_SHA256: ${{ vars.CARTAXI_SIGNING_CERT_SHA256 }}
         run: |
-          grep -E "^e: " build.log | sed 's#file:///home/runner/work/CarTaxiLauncher/CarTaxiLauncher/##' | head -20 | while IFS= read -r line; do echo "::error::${line}"; done || true
-      - uses: softprops/action-gh-release@v2
+          set -euo pipefail
+          if [[ -z "$CARTAXI_KEYSTORE_BASE64" || -z "$CARTAXI_KEYSTORE_PASSWORD" || -z "$CARTAXI_SIGNING_CERT_SHA256" ]]; then
+            echo '::error::Configure CARTAXI_KEYSTORE_BASE64, KEYTHANHTAXIXANH and CARTAXI_SIGNING_CERT_SHA256 first'
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/cartaxi-signing"
+          chmod 700 "$RUNNER_TEMP/cartaxi-signing"
+          printf '%s' "$CARTAXI_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/cartaxi-signing/release.p12"
+          chmod 600 "$RUNNER_TEMP/cartaxi-signing/release.p12"
+          keytool -list -storetype PKCS12 -keystore "$RUNNER_TEMP/cartaxi-signing/release.p12" -storepass "$CARTAXI_KEYSTORE_PASSWORD" -alias cartaxi >/dev/null
+          actual=$(keytool -exportcert -rfc -storetype PKCS12 -keystore "$RUNNER_TEMP/cartaxi-signing/release.p12" -storepass "$CARTAXI_KEYSTORE_PASSWORD" -alias cartaxi | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr '[:lower:]' '[:upper:]')
+          expected=$(printf '%s' "$CARTAXI_SIGNING_CERT_SHA256" | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')
+          if [[ -z "$actual" || "$actual" != "$expected" ]]; then
+            echo '::error::Signing certificate does not match approved private-key certificate fingerprint'
+            exit 1
+          fi
+      - name: Build signed release APK
+        env:
+          CARTAXI_KEYSTORE_FILE: ${{ runner.temp }}/cartaxi-signing/release.p12
+          CARTAXI_KEYSTORE_PASSWORD: ${{ secrets.KEYTHANHTAXIXANH }}
+        run: gradle :app:assembleRelease --no-daemon --console=plain
+      - name: Verify APK signature and file
+        shell: bash
+        env:
+          APPROVED_CERT_SHA256: ${{ vars.CARTAXI_SIGNING_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/release/app-release.apk
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose "$apk"
+          actual=$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$apk" | sed -n 's/.*Signer #1 certificate SHA-256 digest: //p' | head -1 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')
+          expected=$(printf '%s' "$APPROVED_CERT_SHA256" | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')
+          if [[ -z "$actual" || "$actual" != "$expected" ]]; then
+            echo '::error::Built APK does not match the approved private-key certificate'
+            exit 1
+          fi
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
           name: Build ${{ github.run_number }}
-          files: app/build/outputs/apk/debug/app-debug.apk
+          files: app/build/outputs/apk/release/app-release.apk
+          fail_on_unmatched_files: true
+      - name: Remove temporary signing material
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/cartaxi-signing"
