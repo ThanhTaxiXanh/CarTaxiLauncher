@@ -51,15 +51,6 @@ class RoadSigns(private val cacheFile: File) {
         private const val MAX_AGE_MS = 15 * 60_000L
         private const val MAX_DATA_DISTANCE_M = 900.0
 
-        // Giới hạn ước tính khi OSM không ghi maxspeed (chỉnh tại đây nếu cần)
-        private val FALLBACK = mapOf(
-            "motorway" to 90, "motorway_link" to 50,
-            "trunk" to 60, "trunk_link" to 40,
-            "primary" to 50, "primary_link" to 40,
-            "secondary" to 50, "secondary_link" to 40,
-            "tertiary" to 50, "tertiary_link" to 40,
-            "unclassified" to 40, "residential" to 30, "living_street" to 20
-        )
         private const val HIGHWAYS =
             "motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|" +
                 "motorway_link|trunk_link|primary_link|secondary_link|tertiary_link"
@@ -357,7 +348,8 @@ class RoadSigns(private val cacheFile: File) {
         if (w != null) {
             lastWay = w
             // Opposite-direction tags and generic highway types are not valid legal speed limits.
-            val explicit = if (bestFwd) (w.fwd ?: w.all) else (w.bwd ?: w.all)
+            val explicit = if (!moving || !heading.isFinite()) w.all
+                else if (bestFwd) (w.fwd ?: w.all) else (w.bwd ?: w.all)
             if (explicit != null) commit(explicit, false, now)
             else { shown = null; pendV = null; pendN = 0 }
         } else {
@@ -389,6 +381,6 @@ class RoadSigns(private val cacheFile: File) {
             if (ups.none { it.item.type == c.item.type && abs(it.distM - c.distM) < 25 }) ups.add(c)
             if (ups.size >= 4) break
         }
-        return SignsState(shown, shownEst, ups, if (shown == null) "Chưa xác định giới hạn trên đường" else "Giới hạn từ dữ liệu OSM")
+        return SignsState(shown, shownEst, ups, if (shown == null) "Chưa xác định giới hạn trên đường" else "Giới hạn theo dữ liệu OSM")
     }
 }
