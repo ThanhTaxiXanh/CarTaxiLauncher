@@ -50,3 +50,16 @@ Deleting the old private key from the active branch does not purge public Git hi
 6. Only **after** the new signed APK is available, back up local app data as appropriate. On the **Android phone used for Android Auto** (not the iPhone), uninstall build-71 and install the new APK. Approve Android Auto and GPS permissions again. Future builds using this key and increasing version codes can update in place.
 
 **Security trade-off:** Because the original PKCS#12 file exists in public Git history, adopting it long-term does not fully remediate signing-key exposure. A fresh private key stored entirely outside Git history is safer, but requires another intentional signer migration before installation. The chosen workflow does not pretend the historical key has become private simply because it is no longer in the current branch.
+
+
+## Open traffic signs and speed limits (Datmap-inspired UI)
+
+- **Free source already in service:** OpenStreetMap `maxspeed=*`, directional limits `maxspeed:forward/backward`, tagged traffic signs, stop/yield/speed cameras via public Overpass (ODbL; attribution required). The base map uses OpenFreeMap. The application shows OSM attribution and should preserve it.
+- **Optional independent reviewed source:** `app/src/main/assets/verified_signs.geojson`. This separate GeoJSON FeatureCollection enables curated, permitted open-data contributions and on-device offline signs, without embedding commercial keys or copying Datmap APIs/assets. It initially contains **zero records**; therefore it does not magically improve coverage until legitimate data is added.
+- Each feature must have `geometry: { "type": "Point", "coordinates": [longitude, latitude] }` and properties `{ "verified": true, "source": "source URL and license", "type": "speed", "value": 60 }`. Valid types: `speed`, `no_overtaking`, `camera`, `stop`, `yield`, `bump`. `value` is required only for speed.
+- Only import signs with independently verified coordinates, heading/road relevance, observation date, and clear compatible license or own mapping rights. Do not copy screenshots, private Datmap records, restricted map/provider datasets, or data with unclear provenance. Respect ODbL attribution and share-alike obligations when merging derived OSM databases.
+- The display uses custom vector speed and no-overtaking icons and distance badges. This is an interface inspired by common navigation conventions, not a clone of Datmap assets.
+- Upcoming distance currently uses straight-line GPS distance plus heading and lateral filtering, **not route-network distance**. On parallel roads, ramps, or overpasses, the displayed upcoming sign may belong to another carriageway. Never assume every warning is correct; obey posted signs.
+- Unknown legal speed limits are displayed as unknown rather than inferred from road categories. Lane guidance is not fabricated without a licensed routing source.
+- Public Overpass servers are community services with request/rate limits and incomplete coverage. Avoid high-frequency bulk queries and use a licensed, controlled data pipeline for broader coverage.
+- All newly bundled GeoJSON updates require an APK build; no remote writes or undisclosed data downloads are added.
