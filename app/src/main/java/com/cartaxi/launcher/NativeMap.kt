@@ -150,6 +150,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             try {
                 step()
             } catch (t: Throwable) {
+                logErr("NativeMap:152", t)
             }
             main.postDelayed(this, 33L)
         }
@@ -211,10 +212,12 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                 it.onDestroy()
             }
         } catch (t: Throwable) {
+            logErr("NativeMap:213", t)
         }
         try {
             pres?.dismiss()
         } catch (t: Throwable) {
+            logErr("NativeMap:217", t)
         }
         pres = null
         map = null
@@ -222,11 +225,13 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         try {
             vd?.release()
         } catch (t: Throwable) {
+            logErr("NativeMap:224", t)
         }
         vd = null
         try {
             reader?.close()
         } catch (t: Throwable) {
+            logErr("NativeMap:229", t)
         }
         reader = null
         frame = null
@@ -494,6 +499,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             segCenterLon = lon
             segMs = now
         } catch (t: Throwable) {
+            logErr("NativeMap:496", t)
         }
     }
 
@@ -696,6 +702,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             src.setGeoJson(FeatureCollection.fromFeatures(feats))
             signsKey = key
         } catch (t: Throwable) {
+            logErr("NativeMap:698", t)
         }
     }
 
@@ -733,6 +740,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                 )
             )
         } catch (t: Throwable) {
+            logErr("NativeMap:735", t)
         }
     }
 
@@ -805,6 +813,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                 streetName = ""
             }
         } catch (t: Throwable) {
+            logErr("NativeMap:807", t)
         }
     }
 
@@ -882,6 +891,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                     )
                 }
             } catch (t: Throwable) {
+                logErr("NativeMap:884", t)
             }
         }
     }
@@ -951,6 +961,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                     }
                 }
             } catch (t: Throwable) {
+                logErr("NativeMap:953", t)
             }
         }
     }

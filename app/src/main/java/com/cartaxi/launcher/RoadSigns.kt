@@ -111,6 +111,7 @@ class RoadSigns(private val cacheFile: File) {
                 try {
                     cacheFile.writeText("$lat,$lon\n$txt")
                 } catch (e: Exception) {
+                    logErr("RoadSigns:113", e)
                 }
             } catch (e: Exception) {
                 error = "Không tải được biển báo"
@@ -131,6 +132,7 @@ class RoadSigns(private val cacheFile: File) {
             val lon = head[1].toDouble()
             if (data == null) data = parse(t.substring(nl + 1), lat, lon, 0L, true)
         } catch (e: Exception) {
+            logErr("RoadSigns:133", e)
         }
     }
 

@@ -16,19 +16,27 @@ android {
         versionName = "0.1.$run"
     }
 
+    // Mật khẩu khóa ký lấy từ biến môi trường (GitHub Secret CARTAXI_KEYSTORE_PASSWORD).
+    // Không có biến này (build cục bộ) thì dùng khóa debug mặc định của Android.
+    val keystorePassword: String? = System.getenv("CARTAXI_KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() }
+
     signingConfigs {
-        create("cartaxi") {
-            storeFile = rootProject.file("signing/cartaxi.p12")
-            storeType = "pkcs12"
-            storePassword = "cartaxi123"
-            keyAlias = "cartaxi"
-            keyPassword = "cartaxi123"
+        if (keystorePassword != null) {
+            create("cartaxi") {
+                storeFile = rootProject.file("signing/cartaxi-release.p12")
+                storeType = "pkcs12"
+                storePassword = keystorePassword
+                keyAlias = "cartaxi"
+                keyPassword = keystorePassword
+            }
         }
     }
 
     buildTypes {
         getByName("debug") {
-            signingConfig = signingConfigs.getByName("cartaxi")
+            if (keystorePassword != null) {
+                signingConfig = signingConfigs.getByName("cartaxi")
+            }
         }
     }
 
@@ -43,7 +51,5 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.car.app:app:1.4.0")
     implementation("com.google.zxing:core:3.5.3")
-    implementation("dev.rikka.shizuku:api:13.1.5")
-    implementation("dev.rikka.shizuku:provider:13.1.5")
     implementation("org.maplibre.gl:android-sdk:11.5.2")
 }
