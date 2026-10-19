@@ -250,15 +250,19 @@ object LauncherRenderer {
 
     private fun drawStreet(c: Canvas, m: RectF, k: Float, name: String) {
         if (name.isEmpty()) return
-        val size = maxOf(14f, 26f * k)
+        // Smaller foreground label; reserve screen space for upcoming junctions.
+        val size = maxOf(12f, 20f * k)
         val ay = m.top + m.height() * 0.73f
-        val cy = minOf(ay + 70f * k, m.bottom - 34f * k)
-        val maxW = m.width() * 0.84f
+        val cy = minOf(ay + 60f * k, m.bottom - 28f * k)
+        val maxW = m.width() * 0.82f
         tp.typeface = Typeface.DEFAULT_BOLD
         tp.textSize = size
         val w = minOf(tp.measureText(name), maxW)
-        val r = RectF(m.centerX() - w / 2f - 18f * k, cy - size * 0.8f, m.centerX() + w / 2f + 18f * k, cy + size * 0.8f)
+        val r = RectF(m.centerX() - w / 2f - 14f * k, cy - size * 0.83f, m.centerX() + w / 2f + 14f * k, cy + size * 0.83f)
         bubble(c, r, STREET)
+        // Slight depth/extrusion from two offset passes, kept subtle for driving.
+        textMid(c, name, m.centerX() + 1.6f * k, cy + 2.2f * k, size, Color.rgb(5, 10, 25), true, maxW)
+        textMid(c, name, m.centerX() + 0.6f * k, cy + 0.9f * k, size, Color.rgb(66, 95, 145), true, maxW)
         textMid(c, name, m.centerX(), cy, size, Color.WHITE, true, maxW)
     }
 
