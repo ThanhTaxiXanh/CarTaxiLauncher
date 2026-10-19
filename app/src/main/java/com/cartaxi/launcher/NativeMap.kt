@@ -705,6 +705,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                 Feature.fromGeometry(Point.fromLngLat(s.lon, s.lat)).apply {
                     addStringProperty("label", s.label)
                     addStringProperty("color", signColor(s.type))
+                    addStringProperty("type", s.type)
                 }
             }
             src.setGeoJson(FeatureCollection.fromFeatures(feats))
@@ -720,14 +721,26 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             style.addSource(GeoJsonSource(signsSrc))
             style.addLayer(
                 CircleLayer("ct-signs-circle", signsSrc).withProperties(
-                    PropertyFactory.circleColor(Expression.toColor(Expression.get("color"))),
+                    PropertyFactory.circleColor(
+                        Expression.switchCase(
+                            Expression.eq(Expression.get("type"), Expression.literal("speed")),
+                            Expression.color("#ffffff"),
+                            Expression.toColor(Expression.get("color"))
+                        )
+                    ),
                     PropertyFactory.circleRadius(
                         Expression.interpolate(
                             Expression.linear(), Expression.zoom(),
                             Expression.stop(14, 8f), Expression.stop(17, 15f), Expression.stop(20, 26f)
                         )
                     ),
-                    PropertyFactory.circleStrokeColor("#ffffff"),
+                    PropertyFactory.circleStrokeColor(
+                        Expression.switchCase(
+                            Expression.eq(Expression.get("type"), Expression.literal("speed")),
+                            Expression.color("#d62626"),
+                            Expression.color("#ffffff")
+                        )
+                    ),
                     PropertyFactory.circleStrokeWidth(2.5f)
                 )
             )
@@ -741,7 +754,13 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                             Expression.stop(14, 8f), Expression.stop(17, 12f), Expression.stop(20, 18f)
                         )
                     ),
-                    PropertyFactory.textColor("#ffffff"),
+                    PropertyFactory.textColor(
+                        Expression.switchCase(
+                            Expression.eq(Expression.get("type"), Expression.literal("speed")),
+                            Expression.color("#121212"),
+                            Expression.color("#ffffff")
+                        )
+                    ),
                     PropertyFactory.textAllowOverlap(true),
                     PropertyFactory.textIgnorePlacement(true),
                     PropertyFactory.textPitchAlignment(Property.TEXT_PITCH_ALIGNMENT_VIEWPORT)
