@@ -62,12 +62,12 @@ jobs:
         shell: bash
         env:
           CARTAXI_KEYSTORE_BASE64: ${{ secrets.CARTAXI_KEYSTORE_BASE64 }}
-          CARTAXI_KEYSTORE_PASSWORD: ${{ secrets.CARTAXI_KEYSTORE_PASSWORD }}
+          CARTAXI_KEYSTORE_PASSWORD: ${{ secrets.KEYTHANHTAXIXANH }}
           CARTAXI_SIGNING_CERT_SHA256: ${{ vars.CARTAXI_SIGNING_CERT_SHA256 }}
         run: |
           set -euo pipefail
           if [[ -z "$CARTAXI_KEYSTORE_BASE64" || -z "$CARTAXI_KEYSTORE_PASSWORD" || -z "$CARTAXI_SIGNING_CERT_SHA256" ]]; then
-            echo '::error::Signing secrets and expected certificate fingerprint must be configured'
+            echo '::error::Configure CARTAXI_KEYSTORE_BASE64, KEYTHANHTAXIXANH and CARTAXI_SIGNING_CERT_SHA256 first'
             exit 1
           fi
           mkdir -p "$RUNNER_TEMP/cartaxi-signing"
@@ -84,7 +84,7 @@ jobs:
       - name: Build signed release APK
         env:
           CARTAXI_KEYSTORE_FILE: ${{ runner.temp }}/cartaxi-signing/release.p12
-          CARTAXI_KEYSTORE_PASSWORD: ${{ secrets.CARTAXI_KEYSTORE_PASSWORD }}
+          CARTAXI_KEYSTORE_PASSWORD: ${{ secrets.KEYTHANHTAXIXANH }}
         run: gradle :app:assembleRelease --no-daemon --console=plain
       - name: Verify APK signature and file
         shell: bash
