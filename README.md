@@ -14,12 +14,14 @@ Kotlin Android Automotive navigation launcher. GPS requires Android runtime loca
 On iPhone, open the repository in Safari → **Settings → Secrets and variables → Actions** and set:
 
 1. **Repository secret `CARTAXI_KEYSTORE_BASE64`**: Base64 of the actual, previously used `cartaxi` PKCS#12 keystore. Keep its full contents private; do not store it in repository code, screenshots, issues, or chat.
-2. **Repository secret `CARTAXI_KEYSTORE_PASSWORD`**: password for the PKCS#12 store and its key alias `cartaxi`.
+2. **Repository secret `KEYTHANHTAXIXANH`**: password for the PKCS#12 store and its key alias `cartaxi`.
 3. **Repository variable `CARTAXI_SIGNING_CERT_SHA256`**: SHA-256 certificate fingerprint of an **existing APK already installed by users**, obtained from a trusted APK/certificate verification step. Fingerprints are public data; do **not** guess this value or use the SHA-256 digest of the APK file.
 
 To encode the PKCS#12 file using iPhone only: save the keystore in the iOS Files app, make a Shortcuts action chain **Select File → Base64 Encode (line breaks: none) → Copy to Clipboard**, then paste into the GitHub secret creation form. Clear the clipboard afterward. Use the exact previously used password; do not invent a new password for an existing store.
 
 **Important compatibility note:** Previous CI ran `assembleDebug` while passing the secret under `KEYTHANHTAXIXANH`, but Gradle was looking for `CARTAXI_KEYSTORE_PASSWORD`. Therefore previously published APKs may have been signed with a machine-specific Android **debug** certificate, not the `cartaxi` PKCS#12 certificate. APK updates require compatible signatures. If the signing fingerprints differ, **stop**: do not publish an incompatible update. Choose an explicit migration strategy, potentially involving uninstall/reinstall and loss of local data.
+
+The GitHub Secret `KEYTHANHTAXIXANH` is the **password**, not the private key itself. The PKCS#12 keystore must separately be supplied in `CARTAXI_KEYSTORE_BASE64`; the CI maps your existing secret name to the internal Gradle environment variable `CARTAXI_KEYSTORE_PASSWORD`.
 
 The previous file `signing/cartaxi-release.p12` was tracked in a public repository. This change deletes it from the current Git tree and ignores keystores, **but does not remove copies from prior commits, forks or caches**. Treat it as potentially exposed. Avoid rotating the key without understanding update compatibility. Store a secure backup before any permanent history rewrite.
 
