@@ -688,11 +688,19 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             signs.request(tLat, tLon)
             signsState = signs.state(tLat, tLon, tHeading, moving)
             val near = signs.nearby(tLat, tLon, 600.0, 60)
+            // Include sign type, label and limit: the same node can change meaning after refresh.
+            // Check the style/source before comparing to avoid suppressing the first render.
             var key = near.size
-            for (s in near) key = key * 31 + (s.lat.hashCode() xor s.lon.hashCode())
-            if (key == signsKey) return
+            for (s in near) {
+                key = key * 31 + s.lat.hashCode()
+                key = key * 31 + s.lon.hashCode()
+                key = key * 31 + s.type.hashCode()
+                key = key * 31 + s.label.hashCode()
+                key = key * 31 + s.value
+            }
             val st = map?.style ?: return
             val src = st.getSourceAs<GeoJsonSource>(signsSrc) ?: return
+            if (key == signsKey) return
             val feats = near.map { s ->
                 Feature.fromGeometry(Point.fromLngLat(s.lon, s.lat)).apply {
                     addStringProperty("label", s.label)
