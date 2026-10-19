@@ -49,6 +49,7 @@ class RoadSigns(private val cacheFile: File) {
         private const val RADIUS = 900
         private const val REFETCH_M = 350.0
         private const val MAX_AGE_MS = 15 * 60_000L
+        private const val MAX_DATA_DISTANCE_M = 900.0
 
         // Giới hạn ước tính khi OSM không ghi maxspeed (chỉnh tại đây nếu cần)
         private val FALLBACK = mapOf(
@@ -81,6 +82,7 @@ class RoadSigns(private val cacheFile: File) {
     private val exec = Executors.newSingleThreadExecutor()
 
     private var lastWay: Way? = null
+    private var lastData: Data? = null
     private var shown: Int? = null
     private var shownEst = false
     private var shownMs = 0L
@@ -178,16 +180,16 @@ class RoadSigns(private val cacheFile: File) {
 
     // ---------- phân tích ----------
 
-    private fun JSONObject.str(k: String): String? = if (has(k)) optString(k) else null
+    private fun JSONObject.str(k: String): String? = if (has(k) && !isNull(k)) optString(k) else null
 
     private fun parseSpeed(s: String?): Int? {
         if (s == null) return null
         val t = s.trim().lowercase()
         if (t == "walk") return 7
-        val m = Regex("^(\\d{1,3})\\s*(mph|km/h)?").find(t) ?: return null
+        val m = Regex("^(\\d{1,3})(?:\\s*(mph|km/h|kmh|kph))?$").matchEntire(t) ?: return null
         var v = m.groupValues[1].toInt()
         if (m.groupValues[2] == "mph") v = (v * 1.609).roundToInt()
-        return if (v in 5..130) v else null
+        return if (v in 5..160) v else null
     }
 
     private fun parse(txt: String, lat: Double, lon: Double, now: Long, stale: Boolean): Data {
@@ -267,6 +269,7 @@ class RoadSigns(private val cacheFile: File) {
     /** Biển báo trong bán kính, dùng để vẽ lên bản đồ. */
     fun nearby(lat: Double, lon: Double, radius: Double, max: Int): List<SignItem> {
         val d = data ?: return emptyList()
+        if (d.stale || dist(lat, lon, d.lat, d.lon) > MAX_DATA_DISTANCE_M || SystemClock.elapsedRealtime() - d.timeMs > MAX_AGE_MS) return emptyList()
         return d.signs.filter { dist(lat, lon, it.lat, it.lon) <= radius }
             .sortedBy { dist(lat, lon, it.lat, it.lon) }
             .take(max)
@@ -295,6 +298,20 @@ class RoadSigns(private val cacheFile: File) {
             if (fetching) "Đang tải biển báo..." else if (error.isNotEmpty()) error else "Chưa có dữ liệu"
         )
         val now = SystemClock.elapsedRealtime()
+        if (d !== lastData) {
+            lastData = d
+            lastWay = null
+            shown = null
+            pendV = null
+            pendN = 0
+        }
+        if (d.stale || dist(lat, lon, d.lat, d.lon) > MAX_DATA_DISTANCE_M || now - d.timeMs > MAX_AGE_MS) {
+            shown = null
+            lastWay = null
+            pendV = null
+            pendN = 0
+            return SignsState(null, false, emptyList(), if (fetching) "Đang cập nhật biển báo..." else if (error.isNotEmpty()) error else "Dữ liệu biển báo đã cũ")
+        }
         val kx = 111320.0 * cos(Math.toRadians(lat))
         val ky = 111320.0
 
@@ -323,7 +340,7 @@ class RoadSigns(private val cacheFile: File) {
                 val segB = (Math.toDegrees(atan2(dx, dy)) + 360.0) % 360.0
                 val a0 = angDiff(segB, heading)
                 var score = dd
-                if (moving) {
+                if (moving && heading.isFinite()) {
                     val a = min(a0, 180.0 - a0)
                     if (a > 45.0) continue
                     score += 0.25 * a
@@ -339,12 +356,14 @@ class RoadSigns(private val cacheFile: File) {
         val w = bestWay
         if (w != null) {
             lastWay = w
-            val explicit = (if (bestFwd) (w.fwd ?: w.all) else (w.bwd ?: w.all)) ?: w.all ?: w.fwd ?: w.bwd
-            val fb = FALLBACK[w.highway]
+            // Opposite-direction tags and generic highway types are not valid legal speed limits.
+            val explicit = if (bestFwd) (w.fwd ?: w.all) else (w.bwd ?: w.all)
             if (explicit != null) commit(explicit, false, now)
-            else if (fb != null) commit(fb, true, now)
-        } else if (shown != null && now - shownMs > 6000L) {
+            else { shown = null; pendV = null; pendN = 0 }
+        } else {
+            // Clear the previous road's value if road matching fails.
             shown = null
+            lastWay = null
             pendV = null
             pendN = 0
         }
@@ -357,9 +376,11 @@ class RoadSigns(private val cacheFile: File) {
             val dd = sqrt(dx * dx + dy * dy)
             if (dd < 10.0 || dd > 350.0) continue
             val b = (Math.toDegrees(atan2(dx, dy)) + 360.0) % 360.0
-            val a = angDiff(b, heading)
-            if (a > 30.0) continue
-            if (dd * sin(Math.toRadians(a)) > 22.0) continue
+            if (moving && heading.isFinite()) {
+                val a = angDiff(b, heading)
+                if (a > 30.0) continue
+                if (dd * sin(Math.toRadians(a)) > 22.0) continue
+            }
             cand.add(UpcomingSign(s, dd.roundToInt()))
         }
         cand.sortBy { it.distM }
@@ -368,6 +389,6 @@ class RoadSigns(private val cacheFile: File) {
             if (ups.none { it.item.type == c.item.type && abs(it.distM - c.distM) < 25 }) ups.add(c)
             if (ups.size >= 4) break
         }
-        return SignsState(shown, shownEst, ups, if (d.stale) "Dữ liệu cũ (ngoại tuyến)" else "Đã có dữ liệu")
+        return SignsState(shown, shownEst, ups, if (shown == null) "Chưa xác định giới hạn trên đường" else "Giới hạn từ dữ liệu OSM")
     }
 }
