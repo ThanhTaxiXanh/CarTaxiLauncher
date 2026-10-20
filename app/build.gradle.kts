@@ -56,4 +56,5 @@ dependencies {
     implementation("androidx.car.app:app:1.4.0")
     implementation("com.google.zxing:core:3.5.3")
     implementation("org.maplibre.gl:android-sdk:11.5.2")
+    testImplementation("junit:junit:4.13.2")
 }
