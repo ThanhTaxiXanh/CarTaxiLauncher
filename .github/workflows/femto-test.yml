@@ -70,7 +70,10 @@ jobs:
           [[ -n "$actual" && "$actual" == "$expected" ]] || { echo '::error::APK signer mismatch'; exit 1; }
           pkg=$("$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$apk" | grep '^package:')
           echo "$pkg"
-          [[ "$pkg" == *"name=\'com.cartaxi.launcher.femtotest\'"* ]] || { echo '::error::Test APK package ID mismatch'; exit 1; }
+          if ! printf '%s\n' "$pkg" | grep -Fq "name='com.cartaxi.launcher.femtotest'"; then
+            echo '::error::Test APK package ID mismatch'
+            exit 1
+          fi
           mkdir -p test-output
           cp "$apk" test-output/CarTaxiLauncher-Femto-TEST.apk
       - name: Upload signed test APK (not a GitHub Release)
