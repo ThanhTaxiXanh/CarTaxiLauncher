@@ -397,6 +397,15 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         )
     }
 
+    // Femto-inspired compass: switch to north-up inspection without losing zoom.
+    // Recenter (◎) restores heading-up GPS follow.
+    private fun showNorthUp() {
+        val m = map ?: return
+        leaveFollow()
+        val pos = m.cameraPosition
+        m.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder(pos).bearing(0.0).build()))
+    }
+
     private fun toggleTilt() {
         tilt = if (tilt > 0.0) 0.0 else 60.0
         tiltBtn?.text = if (tilt > 0.0) "3D" else "2D"
@@ -1145,8 +1154,9 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         tv.typeface = Typeface.DEFAULT_BOLD
         tv.gravity = Gravity.CENTER
         val bg = GradientDrawable()
-        bg.shape = GradientDrawable.OVAL
-        bg.setColor(Color.argb(225, 38, 44, 64))
+        bg.shape = GradientDrawable.RECTANGLE
+        bg.cornerRadius = size * 0.26f
+        bg.setColor(Color.argb(190, 38, 48, 67))
         tv.background = bg
         tv.setOnClickListener { onClick() }
         return tv
@@ -1160,10 +1170,17 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         root.addView(av, FrameLayout.LayoutParams(arrowView, arrowView))
         arrow = av
 
-        val size = (frameW * 0.15f).toInt().coerceIn(52, 84)
-        val gap = (size * 0.14f).toInt()
+        val size = (frameW * 0.105f).toInt().coerceIn(40, 58)
+        val gap = (size * 0.06f).toInt()
         val col = LinearLayout(c)
         col.orientation = LinearLayout.VERTICAL
+        col.setPadding(3, 7, 3, 7)
+        val capsule = GradientDrawable()
+        capsule.shape = GradientDrawable.RECTANGLE
+        capsule.cornerRadius = size * 0.33f
+        capsule.setColor(Color.argb(215, 22, 32, 48))
+        capsule.setStroke(1, Color.argb(125, 170, 190, 215))
+        col.background = capsule
 
         fun add(b: TextView) {
             val lp = LinearLayout.LayoutParams(size, size)
@@ -1174,6 +1191,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         val tiltB = circle(c, "3D", size) { toggleTilt() }
         tiltBtn = tiltB
         add(tiltB)
+        add(circle(c, "N", size) { showNorthUp() })
         add(circle(c, "+", size) { zoomButton(1.0) })
         add(circle(c, "−", size) { zoomButton(-1.0) })
         val rotateGesture = circle(c, "↻", size) { toggleSwipeRotate() }
