@@ -362,6 +362,21 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         )
     }
 
+    // Android Auto SurfaceCallback does not expose raw two-pointer rotation.
+    // Offer explicit 15-degree map rotation, retaining the existing pan/pinch controls.
+    private fun rotateMap(deltaDegrees: Double) {
+        val m = map ?: return
+        leaveFollow()
+        val pos = m.cameraPosition
+        val current = if (pos.bearing.isFinite()) pos.bearing else 0.0
+        val next = ((current + deltaDegrees) % 360.0 + 360.0) % 360.0
+        m.moveCamera(
+            CameraUpdateFactory.newCameraPosition(
+                CameraPosition.Builder(pos).bearing(next).build()
+            )
+        )
+    }
+
     private fun toggleTilt() {
         tilt = if (tilt > 0.0) 0.0 else 60.0
         tiltBtn?.text = if (tilt > 0.0) "3D" else "2D"
@@ -1133,6 +1148,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         add(tiltB)
         add(circle(c, "+", size) { zoomButton(1.0) })
         add(circle(c, "−", size) { zoomButton(-1.0) })
+        add(circle(c, "↶", size) { rotateMap(-15.0) })
+        add(circle(c, "↷", size) { rotateMap(15.0) })
         add(circle(c, "◎", size) { recenter() })
 
         val flp = FrameLayout.LayoutParams(
