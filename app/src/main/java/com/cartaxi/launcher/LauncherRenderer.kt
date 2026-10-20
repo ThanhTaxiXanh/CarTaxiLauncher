@@ -27,7 +27,9 @@ data class UiState(
     val mapFrameH: Int,
     val mapsStatus: String,
     val streetName: String,
-    val signs: SignsState = SignsState.EMPTY
+    val signs: SignsState = SignsState.EMPTY,
+    val tripDistanceKm: Double = 0.0,
+    val tripAverageKmh: Double = 0.0
 )
 
 object LauncherRenderer {
@@ -94,6 +96,7 @@ object LauncherRenderer {
     private var lastMain: RectF? = null
     private var lastIcons: RectF? = null
     private var lastMapDst: RectF? = null
+    private var lastTripReset: RectF? = null
 
     private var qrStamp = 0L
     private var qrSrc: Bitmap? = null
@@ -115,6 +118,8 @@ object LauncherRenderer {
         val i = ((y - r.top) / (r.height() / ICON_COUNT)).toInt()
         return i.coerceIn(0, ICON_COUNT - 1)
     }
+
+    fun hitTripReset(x: Float, y: Float): Boolean = lastTripReset?.contains(x, y) == true
 
     fun hitMapPoint(x: Float, y: Float): FloatArray? {
         val d = lastMapDst ?: return null
@@ -243,6 +248,7 @@ object LauncherRenderer {
 
         drawStreet(c, m, k, st.streetName)
         drawBubbles(c, m, k, st)
+        drawTripOverlay(c, m, k, st)
 
         c.restore()
         c.drawRoundRect(m, rad, rad, edge)
@@ -402,6 +408,41 @@ object LauncherRenderer {
             val sr = minOf(sb.height() / 2f, (m.right - sb.right - 18f * k) / 2f)
             if (sr > 12f * k) speedSign(c, sb.right + 10f * k + sr, sb.centerY(), sr, lim, st.signs.estimated, over)
         }
+    }
+
+    // Compact trip glass card adapted to CarTaxiLauncher's Canvas surface.
+    // Layout inspired by Femto Car Launcher (Apache-2.0); no Compose assets copied.
+    private fun drawTripOverlay(c: Canvas, m: RectF, k: Float, st: UiState) {
+        val margin = maxOf(8f, 12f * k)
+        val h = maxOf(56f, 72f * k)
+        val bottom = m.bottom - maxOf(8f, 12f * k)
+        val card = RectF(m.left + margin, bottom - h, m.right - margin, bottom)
+        fill.color = Color.argb(222, 18, 29, 43)
+        c.drawRoundRect(card, 14f * k, 14f * k, fill)
+        linePaint.color = Color.argb(100, 185, 208, 232)
+        linePaint.strokeWidth = maxOf(1f, k)
+        c.drawRoundRect(card, 14f * k, 14f * k, linePaint)
+
+        val labelSize = maxOf(10f, 12f * k)
+        val valueSize = maxOf(13f, 19f * k)
+        val first = card.left + card.width() * 0.19f
+        val second = card.left + card.width() * 0.46f
+        val locationX = card.left + card.width() * 0.75f
+        val labelY = card.top + h * 0.30f
+        val valueY = card.top + h * 0.62f
+        textMid(c, "DISTANCE", first, labelY, labelSize, SOFT, true)
+        textMid(c, "AVG", second, labelY, labelSize, SOFT, true)
+        textMid(c, String.format(java.util.Locale.US, "%.1f km", st.tripDistanceKm), first, valueY, valueSize, Color.WHITE, true, card.width() * 0.31f)
+        textMid(c, String.format(java.util.Locale.US, "%.0f km/h", st.tripAverageKmh), second, valueY, valueSize, Color.WHITE, true, card.width() * 0.23f)
+        textMid(c, "VỊ TRÍ", locationX, labelY, labelSize, SOFT, true)
+        val current = st.streetName.ifBlank { "Đang xác định..." }
+        textMid(c, current, locationX, valueY, maxOf(11f, 15f * k), Color.WHITE, true, card.width() * 0.35f)
+        // Reset touch target deliberately within the canvas map viewport.
+        val buttonSize = minOf(h * 0.5f, card.width() * 0.095f)
+        val reset = RectF(card.right - buttonSize - 5f * k, card.top + 5f * k, card.right - 5f * k, card.top + 5f * k + buttonSize)
+        bubble(c, reset, Color.argb(225, 68, 91, 122))
+        textMid(c, "↺", reset.centerX(), reset.centerY(), maxOf(14f, buttonSize * 0.62f), Color.WHITE, true)
+        lastTripReset = reset
     }
 
     // ---------- lịch và sự kiện ----------
