@@ -13,7 +13,7 @@ jobs:
       - name: Checkout reviewed Femto experimental commit
         uses: actions/checkout@v4
         with:
-          ref: 332197b50fd0058370ea9fe59b8afd26038bbfdf
+          ref: ccf16ca9412540f4c7cc132d739167ba52959f4e
           persist-credentials: false
       - name: Set up Java 17
         uses: actions/setup-java@v4
