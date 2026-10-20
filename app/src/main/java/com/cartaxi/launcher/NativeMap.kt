@@ -909,11 +909,19 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
 
     private fun loadStyle() {
         val m = map ?: return
-        m.setStyle(Style.Builder().fromUri(STYLE)) { style ->
-            if (night) themeNight(style)
+        // Femto Car Launcher map styles (Apache-2.0) adapted to native MapLibre.
+        // Unlike its MapLibre GL JS WebView engine, this renders to our Android
+        // Auto VirtualDisplay so the existing SurfaceCallback still works.
+        val name = if (night) "map/femto_dark.json" else "map/femto_light.json"
+        val styleJson = runCatching {
+            appCtx.assets.open(name).bufferedReader().use { it.readText() }
+        }.getOrNull()
+        val builder = if (styleJson != null) Style.Builder().fromJson(styleJson)
+            else Style.Builder().fromUri(STYLE)
+        m.setStyle(builder) { style ->
             tuneLabels(style)
             installSigns(style)
-            status = "Bản đồ đã tải"
+            status = if (styleJson == null) "Bản đồ dự phòng OpenFreeMap" else "Bản đồ Femto / OpenFreeMap"
         }
     }
 
