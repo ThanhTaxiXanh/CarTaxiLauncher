@@ -22,7 +22,8 @@ data class SignItem(
     val type: String,
     val label: String,   // chữ ngắn vẽ trong vòng tròn trên bản đồ
     val name: String,    // tên đầy đủ hiện ở widget
-    val value: Int       // km/h nếu có
+    val value: Int,      // km/h nếu có
+    val facing: Double? = null // OSM direction: physical sign facing, opposite travel
 )
 
 data class UpcomingSign(val item: SignItem, val distM: Int)
@@ -44,12 +45,14 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
     companion object {
         private val ENDPOINTS = arrayOf(
             "https://overpass-api.de/api/interpreter",
-            "https://overpass.kumi.systems/api/interpreter"
+            "https://overpass.private.coffee/api/interpreter"
         )
         private const val RADIUS = 900
         private const val REFETCH_M = 350.0
         private const val MAX_AGE_MS = 15 * 60_000L
         private const val MAX_DATA_DISTANCE_M = 900.0
+        private const val RETRY_MS = 30_000L
+        private const val MAX_RESPONSE_CHARS = 3_500_000
 
         private const val HIGHWAYS =
             "motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|" +
@@ -69,6 +72,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
     @Volatile private var data: Data? = null
     @Volatile private var fetching = false
     @Volatile private var error = ""
+    @Volatile private var lastHttpStatus = ""
     private var lastTry = -100000L
     private val exec = Executors.newSingleThreadExecutor()
 
@@ -93,7 +97,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         val now = SystemClock.elapsedRealtime()
         val d = data
         if (d != null && !d.stale && dist(lat, lon, d.lat, d.lon) < REFETCH_M && now - d.timeMs < MAX_AGE_MS) return
-        if (now - lastTry < 15_000L) return
+        if (now - lastTry < RETRY_MS) return
         lastTry = now
         fetching = true
         exec.execute {
@@ -102,13 +106,15 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
                 val parsed = parse(txt, lat, lon, SystemClock.elapsedRealtime(), false)
                 data = parsed
                 error = ""
+                lastHttpStatus = ""
                 try {
                     cacheFile.writeText("$lat,$lon\n$txt")
                 } catch (e: Exception) {
                     logErr("RoadSigns:113", e)
                 }
             } catch (e: Exception) {
-                error = "Không tải được biển báo"
+                error = "Lỗi dữ liệu biển báo (kết nối/Overpass)"
+                logErr("RoadSigns:network", e)
             } finally {
                 fetching = false
             }
@@ -138,6 +144,8 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
             "node$a[\"enforcement\"=\"maxspeed\"];" +
             "node$a[\"traffic_calming\"];" +
             "node$a[\"traffic_sign\"];" +
+            "node$a[\"traffic_sign:forward\"];" +
+            "node$a[\"traffic_sign:backward\"];" +
             "node$a[\"overtaking\"=\"no\"];" +
             "node$a[\"maxspeed\"];" +
             ");out tags geom;"
@@ -149,12 +157,14 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         for (ep in ENDPOINTS) {
             try {
                 val c = URL(ep).openConnection() as HttpURLConnection
+                c.instanceFollowRedirects = true
                 c.requestMethod = "POST"
                 c.connectTimeout = 8000
                 c.readTimeout = 30000
                 c.doOutput = true
                 c.setRequestProperty("User-Agent", "CarTaxiLauncher/0.1 (Android)")
                 c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+                c.setRequestProperty("Accept", "application/json")
                 c.outputStream.use { it.write(body) }
                 val code = c.responseCode
                 if (code != 200) {
@@ -163,6 +173,10 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
                 }
                 val s = c.inputStream.bufferedReader().use { it.readText() }
                 c.disconnect()
+                if (s.length > MAX_RESPONSE_CHARS) throw IllegalStateException("Overpass response too large")
+                val json = JSONObject(s)
+                if (json.has("remark")) throw IllegalStateException("Overpass query incomplete")
+                if (!json.has("elements")) throw IllegalStateException("Overpass returned no elements array")
                 return s
             } catch (e: Exception) {
                 last = e
@@ -213,16 +227,36 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
                 )
             } else if (e.optString("type") == "node") {
                 if (!e.has("lat") || !e.has("lon")) continue
-                classify(tg, e.getDouble("lat"), e.getDouble("lon"))?.let { signs.add(it) }
+                classify(tg, e.getDouble("lat"), e.getDouble("lon"))?.let { item ->
+                    signs.add(item.copy(facing = parseFacing(tg.str("direction"))))
+                }
             }
         }
         return Data(lat, lon, ways, signs, now, stale)
     }
 
+    // OSM direction=* describes the way the sign physically faces. A driver
+    // approaches from the opposite direction. Support numeric + cardinal values.
+    private fun parseFacing(raw: String?): Double? {
+        val v = raw?.trim()?.uppercase() ?: return null
+        val degrees = when (v) {
+            "N" -> 0.0
+            "NE" -> 45.0
+            "E" -> 90.0
+            "SE" -> 135.0
+            "S" -> 180.0
+            "SW" -> 225.0
+            "W" -> 270.0
+            "NW" -> 315.0
+            else -> v.toDoubleOrNull()
+        } ?: return null
+        return if (degrees.isFinite()) ((degrees % 360.0) + 360.0) % 360.0 else null
+    }
+
     private fun classify(t: JSONObject, lat: Double, lon: Double): SignItem? {
         val hw = t.str("highway")
         val ms = parseSpeed(t.str("maxspeed"))
-        val trafficSign = t.str("traffic_sign")?.lowercase() ?: ""
+        val trafficSign = (t.str("traffic_sign") ?: t.str("traffic_sign:forward") ?: t.str("traffic_sign:backward"))?.lowercase() ?: ""
         return when {
             hw == "speed_camera" || t.str("enforcement") == "maxspeed" ->
                 SignItem(lat, lon, "camera", "CAM", if (ms != null) "Camera tốc độ $ms" else "Camera tốc độ", ms ?: 0)
@@ -410,6 +444,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
             if (dd < 10.0 || dd > 350.0) continue
             val b = (Math.toDegrees(atan2(dx, dy)) + 360.0) % 360.0
             if (moving && heading.isFinite()) {
+                if (s.facing != null && angDiff((s.facing + 180.0) % 360.0, heading) > 65.0) continue
                 val a = angDiff(b, heading)
                 if (a > 30.0) continue
                 if (dd * sin(Math.toRadians(a)) > 22.0) continue
@@ -422,6 +457,15 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
             if (ups.none { it.item.type == c.item.type && abs(it.distM - c.distM) < 25 }) ups.add(c)
             if (ups.size >= 4) break
         }
-        return SignsState(shown, shownEst, ups, if (!usable) "Chưa có tốc độ giới hạn tin cậy" else if (shown == null) "Chưa xác định giới hạn trên đường" else "Giới hạn theo dữ liệu OSM")
+        val status = when {
+            !usable && fetching -> "Đang tải dữ liệu đường/biển báo..."
+            !usable && error.isNotEmpty() -> error
+            !usable -> "Chưa có dữ liệu đường cập nhật"
+            d!!.ways.isEmpty() -> "OSM chưa có dữ liệu đường tại đây"
+            shown == null && d.signs.isEmpty() && extraSigns.isEmpty() -> "OSM thiếu tốc độ và biển báo khu vực này"
+            shown == null -> "Đường chưa có maxspeed / không khớp GPS"
+            else -> "Giới hạn từ OSM (tham khảo)"
+        }
+        return SignsState(shown, shownEst, ups, status)
     }
 }
