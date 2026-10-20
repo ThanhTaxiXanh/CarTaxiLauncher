@@ -1,0 +1,82 @@
+name: Femto map signed test APK
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build_femto_test:
+    if: github.ref == 'refs/heads/main' && github.actor == 'ThanhTaxiXanh'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout reviewed Femto experimental commit
+        uses: actions/checkout@v4
+        with:
+          ref: 713621c02c7b6ea409f91d051cb06a2387d9fef6
+          persist-credentials: false
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Run regression tests
+        run: gradle :app:testDebugUnitTest --no-daemon --console=plain
+      - name: Restore and verify signing certificate
+        shell: bash
+        env:
+          KEY_BASE64: ${{ secrets.CARTAXI_KEYSTORE_BASE64 }}
+          KEY_PASSWORD: ${{ secrets.KEYTHANHTAXIXANH }}
+          APPROVED_CERT: ${{ vars.CARTAXI_SIGNING_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$KEY_BASE64" || -z "$KEY_PASSWORD" || -z "$APPROVED_CERT" ]]; then
+            echo '::error::Missing signing secrets or approved public certificate fingerprint'
+            exit 1
+          fi
+          umask 077
+          mkdir -p "$RUNNER_TEMP/femto-signing"
+          printf '%s' "$KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/femto-signing/key.p12"
+          if ! keytool -list -storetype PKCS12 -keystore "$RUNNER_TEMP/femto-signing/key.p12" -storepass "$KEY_PASSWORD" -alias cartaxi >/dev/null 2>&1; then
+            echo '::error::Keystore cannot be opened with configured signing secret'
+            exit 1
+          fi
+          actual=$(keytool -exportcert -rfc -storetype PKCS12 -keystore "$RUNNER_TEMP/femto-signing/key.p12" -storepass "$KEY_PASSWORD" -alias cartaxi 2>/dev/null | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')
+          expected=$(printf '%s' "$APPROVED_CERT" | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')
+          if [[ -z "$actual" || "$actual" != "$expected" ]]; then
+            echo '::error::Signing certificate is not the approved CarTaxiLauncher signer'
+            exit 1
+          fi
+      - name: Build signed experimental APK
+        env:
+          CARTAXI_KEYSTORE_FILE: ${{ runner.temp }}/femto-signing/key.p12
+          CARTAXI_KEYSTORE_PASSWORD: ${{ secrets.KEYTHANHTAXIXANH }}
+        run: gradle :app:assembleRelease --no-daemon --console=plain
+      - name: Verify signed APK and test version
+        shell: bash
+        env:
+          APPROVED_CERT: ${{ vars.CARTAXI_SIGNING_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/release/app-release.apk
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose "$apk"
+          actual=$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$apk" | sed -n 's/.*Signer #1 certificate SHA-256 digest: //p' | head -1 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')
+          expected=$(printf '%s' "$APPROVED_CERT" | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')
+          [[ -n "$actual" && "$actual" == "$expected" ]] || { echo '::error::APK signer mismatch'; exit 1; }
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$apk" | grep '^package:'
+          mkdir -p test-output
+          cp "$apk" test-output/CarTaxiLauncher-Femto-TEST.apk
+      - name: Upload signed test APK (not a GitHub Release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: CarTaxiLauncher-Femto-signed-test
+          path: test-output/CarTaxiLauncher-Femto-TEST.apk
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove keystore
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/femto-signing"
