@@ -112,6 +112,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var userZoomMs = 0L
     private var manualZoom = 17.0
     private var swipeRotateMode = false
+    private var northUpMode = false
     private var swipeRotateBtn: TextView? = null
     private var tiltBtn: TextView? = null
 
@@ -360,6 +361,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         swipeRotateMode = false
         swipeRotateBtn?.text = "↻"
         following = true
+        northUpMode = false
         userZoom = null
         if (smKmh.isNaN()) smKmh = 0.0
         dZoom = autoZoom(smKmh)
@@ -379,7 +381,10 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private fun toggleSwipeRotate() {
         swipeRotateMode = !swipeRotateMode
         swipeRotateBtn?.text = if (swipeRotateMode) "XOAY" else "↻"
-        if (swipeRotateMode) leaveFollow() else lastTouchMs = SystemClock.elapsedRealtime()
+        if (swipeRotateMode) {
+            northUpMode = false
+            leaveFollow()
+        } else lastTouchMs = SystemClock.elapsedRealtime()
     }
 
     // Android Auto SurfaceCallback does not expose raw two-pointer rotation.
@@ -401,14 +406,22 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     // Recenter (◎) restores heading-up GPS follow.
     private fun showNorthUp() {
         val m = map ?: return
-        leaveFollow()
+        northUpMode = !northUpMode
+        swipeRotateMode = false
+        swipeRotateBtn?.text = "↻"
+        following = true
+        lastTouchMs = SystemClock.elapsedRealtime()
         val pos = m.cameraPosition
-        m.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder(pos).bearing(0.0).build()))
+        val bearing = if (northUpMode) 0.0 else dHeading
+        m.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder(pos).bearing(bearing).build()))
     }
 
     private fun toggleTilt() {
         tilt = if (tilt > 0.0) 0.0 else 60.0
         tiltBtn?.text = if (tilt > 0.0) "3D" else "2D"
+        map?.style?.getLayer("ct-femto-buildings-3d")?.setProperties(
+            PropertyFactory.visibility(if (tilt > 0.0) Property.VISIBLE else Property.NONE)
+        )
     }
 
     private fun zoomButton(delta: Double) {
@@ -658,7 +671,9 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         if (userZoom != null && now - userZoomMs > 15000L) userZoom = null
         val targetZoom = userZoom ?: autoZoom(smKmh)
         dZoom += (targetZoom - dZoom) * (1.0 - exp(-dt / 0.7))
-        if (!following && now - lastTouchMs > 12000L) recenter()
+        // Preserve Femto-like manually selected camera orientation until Locate is pressed.
+        // Expiring rotate mode after 12s made the map suddenly snap back during testing.
+        if (!following && !swipeRotateMode && !northUpMode && now - lastTouchMs > 12000L) recenter()
 
         if (following) {
             m.moveCamera(
@@ -667,7 +682,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                         .target(LatLng(dLat, dLon))
                         .zoom(dZoom)
                         .tilt(tilt)
-                        .bearing(dHeading)
+                        .bearing(if (northUpMode) 0.0 else dHeading)
                         .build()
                 )
             )
@@ -929,8 +944,52 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             else Style.Builder().fromUri(STYLE)
         m.setStyle(builder) { style ->
             tuneLabels(style)
+            install3dBuildings(style)
             installSigns(style)
             status = if (styleJson == null) "Bản đồ dự phòng OpenFreeMap" else "Bản đồ Femto / OpenFreeMap"
+        }
+    }
+
+    // Port of Femto webmap/src/style.ts building extrusion logic.
+    // OpenFreeMap / OpenMapTiles vector source contains height and min-height
+    // attributes. Place the volume below all symbol labels to preserve road names.
+    private fun install3dBuildings(style: Style) {
+        try {
+            if (style.getLayer("ct-femto-buildings-3d") != null) return
+            val vectorSource = style.sources
+                .firstOrNull { it is VectorSource }
+                ?.id ?: "openmaptiles"
+            val layer = FillExtrusionLayer("ct-femto-buildings-3d", vectorSource)
+                .withSourceLayer("building")
+                .withMinZoom(14f)
+                .withProperties(
+                    PropertyFactory.fillExtrusionColor(if (night) "#343b5c" else "#b7bbc7"),
+                    PropertyFactory.fillExtrusionOpacity(0.55f),
+                    PropertyFactory.fillExtrusionHeight(
+                        Expression.interpolate(
+                            Expression.linear(), Expression.zoom(),
+                            Expression.stop(14, 0),
+                            Expression.stop(16, Expression.coalesce(
+                                Expression.get("render_height"), Expression.literal(8)
+                            ))
+                        )
+                    ),
+                    PropertyFactory.fillExtrusionBase(
+                        Expression.interpolate(
+                            Expression.linear(), Expression.zoom(),
+                            Expression.stop(14, 0),
+                            Expression.stop(16, Expression.coalesce(
+                                Expression.get("render_min_height"), Expression.literal(0)
+                            ))
+                        )
+                    ),
+                    PropertyFactory.visibility(if (tilt > 0.0) Property.VISIBLE else Property.NONE)
+                )
+            val firstSymbol = style.layers.firstOrNull { it is SymbolLayer }
+            if (firstSymbol != null) style.addLayerBelow(layer, firstSymbol.id)
+            else style.addLayer(layer)
+        } catch (t: Throwable) {
+            logErr("NativeMap:install3dBuildings", t)
         }
     }
 
