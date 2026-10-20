@@ -961,7 +961,6 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                 ?.id ?: "openmaptiles"
             val layer = FillExtrusionLayer("ct-femto-buildings-3d", vectorSource)
                 .withSourceLayer("building")
-                .withMinZoom(14f)
                 .withProperties(
                     PropertyFactory.fillExtrusionColor(if (night) "#343b5c" else "#b7bbc7"),
                     PropertyFactory.fillExtrusionOpacity(0.55f),
