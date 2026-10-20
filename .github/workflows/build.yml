@@ -34,6 +34,8 @@ jobs:
           gradle-version: '8.9'
       - name: Build development APK
         run: gradle :app:assembleDebug --no-daemon --console=plain
+      - name: Test OSM speed limit and traffic sign parsing
+        run: gradle :app:testDebugUnitTest --no-daemon --console=plain
       - name: Audit historical release APK signing certificates
         shell: bash
         run: |
