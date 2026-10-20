@@ -6,9 +6,12 @@ plugins {
 android {
     namespace = "com.cartaxi.launcher"
     compileSdk = 34
+    val separateFemtoTest = System.getenv("CARTAXI_FEMTO_TEST") == "true"
 
     defaultConfig {
         applicationId = "com.cartaxi.launcher"
+        if (separateFemtoTest) applicationIdSuffix = ".femtotest"
+        manifestPlaceholders["launcherLabel"] = if (separateFemtoTest) "CarTaxi Femto TEST" else "CarTaxiLauncher"
         minSdk = 30
         targetSdk = 33
         val run = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toIntOrNull() ?: 1
