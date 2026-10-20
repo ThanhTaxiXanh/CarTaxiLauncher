@@ -111,6 +111,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var userZoom: Double? = null
     private var userZoomMs = 0L
     private var manualZoom = 17.0
+    private var swipeRotateMode = false
+    private var swipeRotateBtn: TextView? = null
     private var tiltBtn: TextView? = null
 
     // vị trí
@@ -307,16 +309,26 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     }
 
     fun scrollBy(dx: Float, dy: Float) {
-        if (map == null) return
+        val m = map ?: return
         val now = SystemClock.elapsedRealtime()
         if (now - lastScaleMs < 350L) return
-        if (abs(dx) > 400f || abs(dy) > 400f) return
-        leaveFollow()
-        panByScreen(dx, dy, false)
+        if (!dx.isFinite() || !dy.isFinite() || abs(dx) > 400f || abs(dy) > 400f) return
+        if (swipeRotateMode) {
+            // Android Auto reports scroll deltas but no individual pointer
+            // coordinates. In rotate mode, a horizontal swipe controls bearing.
+            if (abs(dx) <= 0.2f) return
+            leaveFollow()
+            val pos = m.cameraPosition
+            val next = ((pos.bearing - dx.toDouble() * 0.35) % 360.0 + 360.0) % 360.0
+            m.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder(pos).bearing(next).build()))
+        } else {
+            leaveFollow()
+            panByScreen(dx, dy, false)
+        }
     }
 
     fun fling(vx: Float, vy: Float) {
-        if (map == null) return
+        if (map == null || swipeRotateMode) return
         val now = SystemClock.elapsedRealtime()
         if (now - lastScaleMs < 600L) return
         leaveFollow()
@@ -345,6 +357,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     }
 
     private fun recenter() {
+        swipeRotateMode = false
+        swipeRotateBtn?.text = "↻"
         following = true
         userZoom = null
         if (smKmh.isNaN()) smKmh = 0.0
@@ -360,6 +374,12 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                     .build()
             )
         )
+    }
+
+    private fun toggleSwipeRotate() {
+        swipeRotateMode = !swipeRotateMode
+        swipeRotateBtn?.text = if (swipeRotateMode) "XOAY" else "↻"
+        if (swipeRotateMode) leaveFollow() else lastTouchMs = SystemClock.elapsedRealtime()
     }
 
     // Android Auto SurfaceCallback does not expose raw two-pointer rotation.
@@ -1148,8 +1168,9 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         add(tiltB)
         add(circle(c, "+", size) { zoomButton(1.0) })
         add(circle(c, "−", size) { zoomButton(-1.0) })
-        add(circle(c, "↶", size) { rotateMap(-15.0) })
-        add(circle(c, "↷", size) { rotateMap(15.0) })
+        val rotateGesture = circle(c, "↻", size) { toggleSwipeRotate() }
+        swipeRotateBtn = rotateGesture
+        add(rotateGesture)
         add(circle(c, "◎", size) { recenter() })
 
         val flp = FrameLayout.LayoutParams(
