@@ -7,7 +7,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
-        android:label="CarTaxiLauncher"
+        android:label="${launcherLabel}"
         android:allowBackup="false">
 
         <meta-data

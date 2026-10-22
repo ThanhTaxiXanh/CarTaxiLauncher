@@ -57,6 +57,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
     private val prefs = appCtx.getSharedPreferences("cfg", Context.MODE_PRIVATE)
     private val qrFile = File(appCtx.filesDir, "qr.png")
     private val maps = NativeMap(appCtx, handler)
+    private val trip = TripMeter(appCtx)
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -76,6 +77,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
                 null
             }
             maps.onLocation(location)
+            trip.onLocation(location)
         }
     }
 
@@ -137,6 +139,11 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
             draw()
             return
         }
+        if (LauncherRenderer.hitTripReset(x, y)) {
+            trip.reset()
+            draw()
+            return
+        }
         val p = LauncherRenderer.hitMapPoint(x, y)
         if (p != null) maps.tap(p[0], p[1])
     }
@@ -186,6 +193,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
 
     private fun stopUpdates() {
         handler.removeCallbacks(ticker)
+        trip.persist()
         try {
             val lm = appCtx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
             lm.removeUpdates(locListener)
@@ -219,7 +227,9 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
                 mapFrameH = maps.frameH,
                 mapsStatus = maps.status,
                 streetName = maps.streetName,
-                signs = maps.signsState
+                signs = maps.signsState,
+                tripDistanceKm = trip.snapshot().distanceKm,
+                tripAverageKmh = trip.snapshot().averageKmh
             )
             LauncherRenderer.render(canvas, width, height, st)
         } finally {

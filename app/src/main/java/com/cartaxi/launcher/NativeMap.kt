@@ -112,6 +112,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var userZoomMs = 0L
     private var manualZoom = 17.0
     private var swipeRotateMode = false
+    private var northUpMode = false
     private var swipeRotateBtn: TextView? = null
     private var tiltBtn: TextView? = null
 
@@ -360,6 +361,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         swipeRotateMode = false
         swipeRotateBtn?.text = "↻"
         following = true
+        northUpMode = false
         userZoom = null
         if (smKmh.isNaN()) smKmh = 0.0
         dZoom = autoZoom(smKmh)
@@ -379,7 +381,10 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private fun toggleSwipeRotate() {
         swipeRotateMode = !swipeRotateMode
         swipeRotateBtn?.text = if (swipeRotateMode) "XOAY" else "↻"
-        if (swipeRotateMode) leaveFollow() else lastTouchMs = SystemClock.elapsedRealtime()
+        if (swipeRotateMode) {
+            northUpMode = false
+            leaveFollow()
+        } else lastTouchMs = SystemClock.elapsedRealtime()
     }
 
     // Android Auto SurfaceCallback does not expose raw two-pointer rotation.
@@ -397,9 +402,26 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         )
     }
 
+    // Femto-inspired compass: switch to north-up inspection without losing zoom.
+    // Recenter (◎) restores heading-up GPS follow.
+    private fun showNorthUp() {
+        val m = map ?: return
+        northUpMode = !northUpMode
+        swipeRotateMode = false
+        swipeRotateBtn?.text = "↻"
+        following = true
+        lastTouchMs = SystemClock.elapsedRealtime()
+        val pos = m.cameraPosition
+        val bearing = if (northUpMode) 0.0 else dHeading
+        m.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder(pos).bearing(bearing).build()))
+    }
+
     private fun toggleTilt() {
         tilt = if (tilt > 0.0) 0.0 else 60.0
         tiltBtn?.text = if (tilt > 0.0) "3D" else "2D"
+        map?.style?.getLayer("ct-femto-buildings-3d")?.setProperties(
+            PropertyFactory.visibility(if (tilt > 0.0) Property.VISIBLE else Property.NONE)
+        )
     }
 
     private fun zoomButton(delta: Double) {
@@ -649,7 +671,9 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         if (userZoom != null && now - userZoomMs > 15000L) userZoom = null
         val targetZoom = userZoom ?: autoZoom(smKmh)
         dZoom += (targetZoom - dZoom) * (1.0 - exp(-dt / 0.7))
-        if (!following && now - lastTouchMs > 12000L) recenter()
+        // Preserve Femto-like manually selected camera orientation until Locate is pressed.
+        // Expiring rotate mode after 12s made the map suddenly snap back during testing.
+        if (!following && !swipeRotateMode && !northUpMode && now - lastTouchMs > 12000L) recenter()
 
         if (following) {
             m.moveCamera(
@@ -658,7 +682,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                         .target(LatLng(dLat, dLon))
                         .zoom(dZoom)
                         .tilt(tilt)
-                        .bearing(dHeading)
+                        .bearing(if (northUpMode) 0.0 else dHeading)
                         .build()
                 )
             )
@@ -909,11 +933,62 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
 
     private fun loadStyle() {
         val m = map ?: return
-        m.setStyle(Style.Builder().fromUri(STYLE)) { style ->
-            if (night) themeNight(style)
+        // Femto Car Launcher map styles (Apache-2.0) adapted to native MapLibre.
+        // Unlike its MapLibre GL JS WebView engine, this renders to our Android
+        // Auto VirtualDisplay so the existing SurfaceCallback still works.
+        val name = if (night) "map/femto_dark.json" else "map/femto_light.json"
+        val styleJson = runCatching {
+            appCtx.assets.open(name).bufferedReader().use { it.readText() }
+        }.getOrNull()
+        val builder = if (styleJson != null) Style.Builder().fromJson(styleJson)
+            else Style.Builder().fromUri(STYLE)
+        m.setStyle(builder) { style ->
             tuneLabels(style)
+            install3dBuildings(style)
             installSigns(style)
-            status = "Bản đồ đã tải"
+            status = if (styleJson == null) "Bản đồ dự phòng OpenFreeMap" else "Bản đồ Femto / OpenFreeMap"
+        }
+    }
+
+    // Port of Femto webmap/src/style.ts building extrusion logic.
+    // OpenFreeMap / OpenMapTiles vector source contains height and min-height
+    // attributes. Place the volume below all symbol labels to preserve road names.
+    private fun install3dBuildings(style: Style) {
+        try {
+            if (style.getLayer("ct-femto-buildings-3d") != null) return
+            val vectorSource = style.sources
+                .firstOrNull { it is VectorSource }
+                ?.id ?: "openmaptiles"
+            val layer = FillExtrusionLayer("ct-femto-buildings-3d", vectorSource)
+                .withSourceLayer("building")
+                .withProperties(
+                    PropertyFactory.fillExtrusionColor(if (night) "#343b5c" else "#b7bbc7"),
+                    PropertyFactory.fillExtrusionOpacity(0.55f),
+                    PropertyFactory.fillExtrusionHeight(
+                        Expression.interpolate(
+                            Expression.linear(), Expression.zoom(),
+                            Expression.stop(14, 0),
+                            Expression.stop(16, Expression.coalesce(
+                                Expression.get("render_height"), Expression.literal(8)
+                            ))
+                        )
+                    ),
+                    PropertyFactory.fillExtrusionBase(
+                        Expression.interpolate(
+                            Expression.linear(), Expression.zoom(),
+                            Expression.stop(14, 0),
+                            Expression.stop(16, Expression.coalesce(
+                                Expression.get("render_min_height"), Expression.literal(0)
+                            ))
+                        )
+                    ),
+                    PropertyFactory.visibility(if (tilt > 0.0) Property.VISIBLE else Property.NONE)
+                )
+            val firstSymbol = style.layers.firstOrNull { it is SymbolLayer }
+            if (firstSymbol != null) style.addLayerBelow(layer, firstSymbol.id)
+            else style.addLayer(layer)
+        } catch (t: Throwable) {
+            logErr("NativeMap:install3dBuildings", t)
         }
     }
 
@@ -1137,8 +1212,9 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         tv.typeface = Typeface.DEFAULT_BOLD
         tv.gravity = Gravity.CENTER
         val bg = GradientDrawable()
-        bg.shape = GradientDrawable.OVAL
-        bg.setColor(Color.argb(225, 38, 44, 64))
+        bg.shape = GradientDrawable.RECTANGLE
+        bg.cornerRadius = size * 0.26f
+        bg.setColor(Color.argb(190, 38, 48, 67))
         tv.background = bg
         tv.setOnClickListener { onClick() }
         return tv
@@ -1152,10 +1228,17 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         root.addView(av, FrameLayout.LayoutParams(arrowView, arrowView))
         arrow = av
 
-        val size = (frameW * 0.15f).toInt().coerceIn(52, 84)
-        val gap = (size * 0.14f).toInt()
+        val size = (frameW * 0.105f).toInt().coerceIn(40, 58)
+        val gap = (size * 0.06f).toInt()
         val col = LinearLayout(c)
         col.orientation = LinearLayout.VERTICAL
+        col.setPadding(3, 7, 3, 7)
+        val capsule = GradientDrawable()
+        capsule.shape = GradientDrawable.RECTANGLE
+        capsule.cornerRadius = size * 0.33f
+        capsule.setColor(Color.argb(215, 22, 32, 48))
+        capsule.setStroke(1, Color.argb(125, 170, 190, 215))
+        col.background = capsule
 
         fun add(b: TextView) {
             val lp = LinearLayout.LayoutParams(size, size)
@@ -1166,6 +1249,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         val tiltB = circle(c, "3D", size) { toggleTilt() }
         tiltBtn = tiltB
         add(tiltB)
+        add(circle(c, "N", size) { showNorthUp() })
         add(circle(c, "+", size) { zoomButton(1.0) })
         add(circle(c, "−", size) { zoomButton(-1.0) })
         val rotateGesture = circle(c, "↻", size) { toggleSwipeRotate() }
